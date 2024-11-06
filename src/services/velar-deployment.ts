@@ -260,24 +260,36 @@ class VelarDeploymentService {
 
       const stxInStandard = selectedFee / this.STX_MICRO_MULTIPLIER;
 
+      console.log('Swap amounts:', {
+        stxRequired: stxInStandard,
+        noccEstimate: swapEstimate.noccAmount,
+        microSTX: selectedFee,
+        microNOCC: Math.ceil(swapEstimate.noccAmount * this.NOCC_MICRO_MULTIPLIER)
+      });
+
       const swapResponse = await swapInstance.swap({
         amount: stxInStandard,
-        type: SwapType.TWO, // Exact output
+        type: SwapType.TWO, // Exact output - means we want exact STX amount
         slippage: this.slippageTolerance
       });
 
+      // Calculate NOCC amount with buffer for slippage
       const noccAmountInMicro = Math.ceil(
         swapEstimate.noccAmount * this.NOCC_MICRO_MULTIPLIER * (1 + this.slippageTolerance)
       );
 
-      console.log('Post condition details:', {
-        originalNoccAmount: swapEstimate.noccAmount,
-        microUnits: noccAmountInMicro,
-        stxAmount: stxInStandard
+      // Add safety margin for post condition
+      const postConditionAmount = Math.ceil(noccAmountInMicro * 1.20); // 20% buffer
+
+      console.log('Post condition amounts:', {
+        noccAmountInMicro,
+        postConditionAmount,
+        slippageBuffer: this.slippageTolerance,
+        safetyMargin: '20%'
       });
 
       const postCondition = Pc.principal(senderAddress)
-        .willSendGte(noccAmountInMicro)
+        .willSendGte(postConditionAmount) // Changed to greater than or equal
         .ft(this.NOCC_CONTRACT, 'nocc');
 
       return new Promise((resolve, reject) => {

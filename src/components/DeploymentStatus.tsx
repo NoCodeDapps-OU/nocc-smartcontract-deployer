@@ -1,52 +1,54 @@
 import { 
-    Box, 
-    VStack, 
-    HStack, 
-    Text, 
-    Flex, 
-    Badge,
-    Link,
-    Code,
-    Container,
-    Tooltip,
-    useClipboard
-  } from '@chakra-ui/react';
+  Box, 
+  VStack, 
+  HStack, 
+  Text, 
+  Flex, 
+  Badge,
+  Link,
+  Code,
+  Container,
+  Tooltip,
+  useClipboard
+} from '@chakra-ui/react';
 import { motion } from 'framer-motion';
 import { useState, useEffect } from 'react';
-import { ExternalLinkIcon, CheckIcon, Clock } from 'lucide-react';
+import { ExternalLinkIcon, CheckIcon, Clock, AlertTriangle } from 'lucide-react';
 import TransactionFlow from './DeploymentFlow';
 import { TimeDisplay } from './DeploymentFlow';
-  
-  interface StatusIndicatorProps {
-    isConfirmed: boolean;
-    timestamp: number;
-    estimatedTime?: number;
-  }
-  
-  interface TransactionCardProps {
-    txId: string;
-    type: 'swap' | 'deploy';
-    isConfirmed: boolean;
-    timestamp: number;
-    progress: number;
-    estimatedTime: number;
-  }
-  
-  interface DeploymentStatusProps {
-    contractId: string;
-    swapTxId: string;
-    deployTxId: string;
-    timestamp: number;
-  }
-  
-  const SWAP_ESTIMATED_TIME = 600; // 10 minutes
-  const DEPLOY_ESTIMATED_TIME = 600; // 10 minutes
-  
-  const StatusIndicator: React.FC<StatusIndicatorProps> = ({ isConfirmed, timestamp, estimatedTime }) => {
+
+interface StatusIndicatorProps {
+  isConfirmed: boolean;
+  isFailed: boolean;
+  timestamp: number;
+  estimatedTime?: number;
+}
+
+interface TransactionCardProps {
+  txId: string;
+  type: 'swap' | 'deploy';
+  isConfirmed: boolean;
+  isFailed: boolean;
+  timestamp: number;
+  progress: number;
+  estimatedTime: number;
+}
+
+interface DeploymentStatusProps {
+  contractId: string;
+  swapTxId: string;
+  deployTxId: string;
+  timestamp: number;
+}
+
+const SWAP_ESTIMATED_TIME = 600; // 10 minutes
+const DEPLOY_ESTIMATED_TIME = 600; // 10 minutes
+
+const StatusIndicator: React.FC<StatusIndicatorProps> = ({ isConfirmed, isFailed, timestamp, estimatedTime }) => {
   const [elapsed, setElapsed] = useState<number>(0);
 
   useEffect(() => {
-    if (isConfirmed) {
+    if (isConfirmed || isFailed) {
       setElapsed(Math.floor((Date.now() - timestamp) / 1000));
       return;
     }
@@ -56,56 +58,113 @@ import { TimeDisplay } from './DeploymentFlow';
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [timestamp, isConfirmed]);
+  }, [timestamp, isConfirmed, isFailed]);
 
   const remainingTime = estimatedTime ? Math.max(0, estimatedTime - elapsed) : 0;
+
+  if (isFailed) {
+    return (
+      <HStack spacing={3} align="center">
+        <motion.div
+          initial={{ scale: 1 }}
+          animate={{ scale: 1 }}
+        >
+          <Box
+            w="12px"
+            h="12px"
+            borderRadius="full"
+            bg="red.400"
+            display="flex"
+            alignItems="center"
+            justifyContent="center"
+          >
+            <AlertTriangle size={8} color="white" />
+          </Box>
+        </motion.div>
+
+        <Text
+          fontSize="sm"
+          fontWeight="medium"
+          color="red.300"
+        >
+          Failed
+        </Text>
+      </HStack>
+    );
+  }
+
+  if (isConfirmed) {
+    return (
+      <HStack spacing={3} align="center">
+        <motion.div
+          initial={{ scale: 1 }}
+          animate={{ scale: 1 }}
+        >
+          <Box
+            w="12px"
+            h="12px"
+            borderRadius="full"
+            bg="green.400"
+            display="flex"
+            alignItems="center"
+            justifyContent="center"
+          >
+            <CheckIcon size={8} color="white" />
+          </Box>
+        </motion.div>
+
+        <Text
+          fontSize="sm"
+          fontWeight="medium"
+          color="green.300"
+        >
+          Confirmed
+        </Text>
+      </HStack>
+    );
+  }
 
   return (
     <HStack spacing={3} align="center">
       <motion.div
         animate={{
-          scale: isConfirmed ? 1 : [1, 1.2, 1],
-          opacity: isConfirmed ? 1 : [1, 0.7, 1],
+          scale: [1, 1.2, 1],
+          opacity: [1, 0.7, 1],
         }}
         transition={{
           duration: 2,
-          repeat: isConfirmed ? 0 : Infinity,
+          repeat: Infinity,
         }}
       >
         <Box
           w="12px"
           h="12px"
           borderRadius="full"
-          bg={isConfirmed ? "green.400" : "orange.400"}
+          bg="orange.400"
           display="flex"
           alignItems="center"
           justifyContent="center"
-        >
-          {isConfirmed && <CheckIcon size={8} color="white" />}
-        </Box>
+        />
       </motion.div>
 
       <HStack spacing={2}>
         <Text
           fontSize="sm"
           fontWeight="medium"
-          color={isConfirmed ? "green.300" : "orange.300"}
+          color="orange.300"
         >
-          {isConfirmed ? 'Confirmed' : `In Progress`}
+          In Progress
         </Text>
         
         <Tooltip
-          label={isConfirmed ? 
-            `Confirmed in ${elapsed}s` : 
-            `Estimated ${Math.ceil(remainingTime / 60)} minutes remaining`
-          }
+          label={`Estimated ${Math.ceil(remainingTime / 60)} minutes remaining`}
           placement="right"
         >
-          <HStack spacing={1} color={isConfirmed ? "green.300" : "orange.300"}>
+          <HStack spacing={1} color="orange.300">
             <Clock size={14} />
             <Text fontSize="xs" fontFamily="mono">
               <TimeDisplay elapsed={elapsed} />
-              {!isConfirmed && remainingTime > 0 && ` / ~${Math.ceil(remainingTime / 60)}m`}
+              {remainingTime > 0 && ` / ~${Math.ceil(remainingTime / 60)}m`}
             </Text>
           </HStack>
         </Tooltip>
@@ -115,13 +174,14 @@ import { TimeDisplay } from './DeploymentFlow';
 };
 
 const TransactionCard: React.FC<TransactionCardProps> = ({ 
-    txId, 
-    type, 
-    isConfirmed, 
-    timestamp, 
-    progress,
-    estimatedTime
-  }) => {
+  txId, 
+  type, 
+  isConfirmed,
+  isFailed,
+  timestamp, 
+  progress,
+  estimatedTime
+}) => {
   const { hasCopied, onCopy } = useClipboard(txId);
 
   return (
@@ -130,11 +190,17 @@ const TransactionCard: React.FC<TransactionCardProps> = ({
       borderRadius="xl"
       p={6}
       border="1px solid"
-      borderColor={isConfirmed ? "green.500/20" : "orange.500/20"}
+      borderColor={
+        isFailed ? "red.500/20" :
+        isConfirmed ? "green.500/20" : 
+        "orange.500/20"
+      }
       transition="all 0.3s"
       _hover={{
         transform: "translateY(-2px)",
-        borderColor: isConfirmed ? "green.500/40" : "orange.500/40"
+        borderColor: isFailed ? "red.500/40" :
+                   isConfirmed ? "green.500/40" : 
+                   "orange.500/40"
       }}
       role="group"
     >
@@ -142,8 +208,9 @@ const TransactionCard: React.FC<TransactionCardProps> = ({
         <Flex justify="space-between" align="center">
           <HStack spacing={4}>
             <StatusIndicator 
-              isConfirmed={isConfirmed} 
-              timestamp={timestamp} 
+              isConfirmed={isConfirmed}
+              isFailed={isFailed}
+              timestamp={timestamp}
               estimatedTime={estimatedTime}
             />
             <Text color="white" fontWeight="bold">
@@ -204,59 +271,53 @@ const TransactionCard: React.FC<TransactionCardProps> = ({
 };
 
 const DeploymentStatus: React.FC<DeploymentStatusProps> = ({
-    contractId,
-    swapTxId,
-    deployTxId,
-    timestamp
-  }) => {
+  contractId,
+  swapTxId,
+  deployTxId,
+  timestamp
+}) => {
   const [swapConfirmed, setSwapConfirmed] = useState<boolean>(false);
+  const [swapFailed, setSwapFailed] = useState<boolean>(false);
   const [deployConfirmed, setDeployConfirmed] = useState<boolean>(false);
+  const [deployFailed, setDeployFailed] = useState<boolean>(false);
   const [swapProgress, setSwapProgress] = useState<number>(0);
   const [deployProgress, setDeployProgress] = useState<number>(0);
 
-  const checkTransactionStatus = async (txId: string): Promise<boolean> => {
+  const checkTransactionStatus = async (txId: string): Promise<{isConfirmed: boolean, isFailed: boolean}> => {
     try {
       const response = await fetch(`https://api.mainnet.hiro.so/extended/v1/tx/${txId}`);
       if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
       const data = await response.json();
-      return data.tx_status === 'success';
+      
+      return {
+        isConfirmed: data.tx_status === 'success',
+        isFailed: data.tx_status.startsWith('abort')
+      };
     } catch (error) {
       console.error('Error checking transaction status:', error);
-      return false;
+      return { isConfirmed: false, isFailed: false };
     }
   };
 
   useEffect(() => {
-    const progressInterval = setInterval(() => {
-      if (!swapConfirmed) {
-        const elapsed = (Date.now() - timestamp) / 1000;
-        const newProgress = Math.min(95, (elapsed / SWAP_ESTIMATED_TIME) * 100);
-        setSwapProgress(newProgress);
-      }
-      if (!deployConfirmed && swapConfirmed) {
-        const elapsed = (Date.now() - timestamp) / 1000;
-        const newProgress = Math.min(95, (elapsed / DEPLOY_ESTIMATED_TIME) * 100);
-        setDeployProgress(newProgress);
-      }
-    }, 1000);
-
-    return () => clearInterval(progressInterval);
-  }, [swapConfirmed, deployConfirmed, timestamp]);
-
-  useEffect(() => {
     const checkStatus = async () => {
-      if (!swapConfirmed) {
+      if (!swapConfirmed && !swapFailed) {
         const swapStatus = await checkTransactionStatus(swapTxId);
-        if (swapStatus) {
+        if (swapStatus.isConfirmed) {
           setSwapConfirmed(true);
           setSwapProgress(100);
+        } else if (swapStatus.isFailed) {
+          setSwapFailed(true);
         }
       }
-      if (!deployConfirmed && swapConfirmed) {
+      
+      if (!deployConfirmed && !deployFailed && (swapConfirmed || swapFailed)) {
         const deployStatus = await checkTransactionStatus(deployTxId);
-        if (deployStatus) {
+        if (deployStatus.isConfirmed) {
           setDeployConfirmed(true);
           setDeployProgress(100);
+        } else if (deployStatus.isFailed) {
+          setDeployFailed(true);
         }
       }
     };
@@ -264,7 +325,7 @@ const DeploymentStatus: React.FC<DeploymentStatusProps> = ({
     const interval = setInterval(checkStatus, 5000);
     checkStatus();
     return () => clearInterval(interval);
-  }, [swapTxId, deployTxId, swapConfirmed, deployConfirmed]);
+  }, [swapTxId, deployTxId, swapConfirmed, swapFailed, deployConfirmed, deployFailed]);
 
   return (
     <Container maxW="container.lg" p={0}>
@@ -330,6 +391,7 @@ const DeploymentStatus: React.FC<DeploymentStatusProps> = ({
               txId={swapTxId}
               type="swap"
               isConfirmed={swapConfirmed}
+              isFailed={swapFailed}
               timestamp={timestamp}
               progress={swapProgress}
               estimatedTime={SWAP_ESTIMATED_TIME}
@@ -338,6 +400,7 @@ const DeploymentStatus: React.FC<DeploymentStatusProps> = ({
               txId={deployTxId}
               type="deploy"
               isConfirmed={deployConfirmed}
+              isFailed={deployFailed}
               timestamp={timestamp}
               progress={deployProgress}
               estimatedTime={DEPLOY_ESTIMATED_TIME}

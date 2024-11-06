@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Box, HStack, VStack, Text, Flex, Link, Alert, AlertIcon, AlertDescription } from '@chakra-ui/react';
 import { ArrowRight, CheckCircle, Clock, ExternalLink, AlertTriangle } from 'lucide-react';
+import { cvToString, deserializeCV, ClarityValue } from '@stacks/transactions';
 
 // Add TimeDisplay component in the same file
 export const TimeDisplay: React.FC<{ elapsed: number }> = ({ elapsed }) => {
@@ -42,18 +43,145 @@ const TransactionFlow = ({ txId, type }: TransactionFlowProps) => {
     startTime: Date.now()
   });
 
+  const formatClarityError = (errorString: string): string => {
+    try {
+      // Try to parse as Clarity value first
+      if (errorString.startsWith('0x')) {
+        try {
+          const clarityValue = deserializeCV(Buffer.from(errorString.slice(2), 'hex'));
+          const parsed = cvToString(clarityValue);
+          return formatParsedClarityError(parsed);
+        } catch (e) {
+          console.error('Error deserializing Clarity value:', e);
+        }
+      }
+
+      return formatParsedClarityError(errorString);
+    } catch (e) {
+      console.error('Error formatting error:', e);
+      return errorString;
+    }
+  };
+
+  const formatParsedClarityError = (errorString: string): string => {
+    // Post Condition Failures
+    if (errorString.includes('post-condition')) {
+      if (errorString.includes('STX')) {
+        return 'Transaction failed: STX balance check failed';
+      }
+      if (errorString.includes('ft-transfer')) {
+        return 'Transaction failed: Token transfer check failed';
+      }
+      if (errorString.includes('nft-transfer')) {
+        return 'Transaction failed: NFT transfer check failed';
+      }
+      return 'Transaction failed: Post condition check failed';
+    }
+
+    // Smart Contract Errors
+    if (errorString.includes('ERR_')) {
+      const errorMap: { [key: string]: string } = {
+        'ERR_INSUFFICIENT_BALANCE': 'Insufficient balance',
+        'ERR_NOT_AUTHORIZED': 'Not authorized to perform this action',
+        'ERR_STACKING_THRESHOLD': 'Amount below stacking threshold',
+        'ERR_TRANSFER_FAILED': 'Token transfer failed',
+        'ERR_INVALID_AMOUNT': 'Invalid amount specified',
+        'ERR_MAX_IN_RATIO': 'Swap exceeds maximum input amount',
+        'ERR_MIN_OUT_RATIO': 'Swap output below minimum amount',
+        'ERR_SLIPPAGE_EXCEEDED': 'Price slippage exceeded',
+        'ERR_DEADLINE_EXPIRED': 'Transaction deadline expired',
+        'ERR_POOL_NOT_FOUND': 'Liquidity pool not found',
+        'ERR_INSUFFICIENT_LIQUIDITY': 'Insufficient liquidity',
+        'ERR_ZERO_AMOUNT': 'Amount cannot be zero',
+        'ERR_SAME_TOKEN': 'Cannot swap same token',
+        'ERR_CONTRACT_ALREADY_EXISTS': 'Contract already exists',
+        'ERR_CONTRACT_NOT_FOUND': 'Contract not found',
+        'ERR_INVALID_PARAMETER': 'Invalid parameter provided'
+      };
+
+      for (const [key, message] of Object.entries(errorMap)) {
+        if (errorString.includes(key)) {
+          return `Transaction failed: ${message}`;
+        }
+      }
+    }
+
+    // Swap Operation Results
+    if (errorString.includes('(ok (tuple')) {
+      const extractValue = (key: string) => {
+        const regex = new RegExp(`${key} u(\\d+)`);
+        const match = errorString.match(regex);
+        return match ? parseInt(match[1]) : null;
+      };
+
+      const amtIn = extractValue('amt-in');
+      const amtInMax = extractValue('amt-in-max');
+      const amtOut = extractValue('amt-out');
+
+      if (amtIn && amtOut) {
+        const stxAmount = amtOut / 1_000_000;
+        const noccAmount = amtIn / 1_000;
+
+        if (amtInMax && amtIn > amtInMax) {
+          return `Transaction failed: Required ${noccAmount.toFixed(3)} NOCC to get ${stxAmount.toFixed(3)} STX for gas fee, but exceeded maximum allowed amount of ${(amtInMax/1_000).toFixed(3)} NOCC`;
+        }
+
+        return `Transaction failed: Insufficient NOCC balance - needed ${noccAmount.toFixed(3)} NOCC to get ${stxAmount.toFixed(3)} STX for gas fee`;
+      }
+    }
+
+    // Generic Clarity Errors
+    if (errorString.includes('(err')) {
+      const errorMatch = errorString.match(/\(err\s*[u"]?([^)"]+)[u"]?\)/);
+      if (errorMatch) {
+        return `Transaction failed: ${errorMatch[1]}`;
+      }
+    }
+
+    // Runtime Errors
+    if (errorString.includes('runtime_error')) {
+      if (errorString.includes('NoSuchContract')) {
+        return 'Transaction failed: Contract not found';
+      }
+      if (errorString.includes('BadFunctionName')) {
+        return 'Transaction failed: Function not found in contract';
+      }
+      return 'Transaction failed: Runtime error occurred';
+    }
+
+    // Analysis Errors
+    if (errorString.includes('analysis_error')) {
+      return 'Transaction failed: Contract analysis error';
+    }
+
+    // Serialization Errors
+    if (errorString.includes('serialization_error')) {
+      return 'Transaction failed: Invalid transaction format';
+    }
+
+    // If we can't specifically parse it, clean it up
+    return errorString
+      .replace(/[()]/g, '')
+      .replace(/u\d+/g, match => parseInt(match.slice(1)).toString())
+      .replace(/\s+/g, ' ')
+      .trim();
+  };
+
   useEffect(() => {
     const checkStatus = async () => {
       try {
         const response = await fetch(`https://api.hiro.so/extended/v1/tx/${txId}`);
         const data = await response.json();
 
-        // Get detailed error reason if failed
+        // Get the raw error message directly from the transaction data
         let errorReason = '';
-        if (data.tx_status === 'abort_by_response') {
-          errorReason = data.tx_result?.repr || 'Transaction aborted by contract';
-        } else if (data.tx_status === 'abort_by_post_condition') {
-          errorReason = 'Transaction aborted by post-condition';
+        if (data.tx_status.startsWith('abort')) {
+          // Get the raw error message and format it
+          if (data.tx_result?.repr) {
+            errorReason = formatClarityError(data.tx_result.repr);
+          } else if (data.tx_result?.raw_result) {
+            errorReason = formatClarityError(data.tx_result.raw_result);
+          }
         }
 
         // Update status based on tx data
@@ -64,7 +192,7 @@ const TransactionFlow = ({ txId, type }: TransactionFlowProps) => {
           isFailed: data.tx_status.startsWith('abort'),
           startTime: prev.startTime,
           burnBlockHeight: data.burn_block_height,
-          errorReason
+          errorReason: errorReason || 'Transaction failed' // Default message if no specific error
         }));
       } catch (error) {
         console.error('Error fetching tx status:', error);
@@ -122,7 +250,7 @@ const TransactionFlow = ({ txId, type }: TransactionFlowProps) => {
         {TX_STAGES.map((stage, index) => {
           const { title, description, isError } = getStageInfo(stage);
           const isActive = index <= txStatus.currentStage || (txStatus.isFailed && index === 1);
-          const isComplete = index < txStatus.currentStage;
+          const isComplete = index < txStatus.currentStage || (index === txStatus.currentStage && txStatus.isConfirmed);
           const showError = txStatus.isFailed && index > 0;
           
           return (
