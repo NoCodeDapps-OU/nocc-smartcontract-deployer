@@ -32,6 +32,12 @@ export interface DeploymentResult {
   contractId: string;
 }
 
+interface SwapPayload {
+  amount: number;
+  type: SwapType;
+  slippage?: number;
+}
+
 class VelarDeploymentService {
   private sdk: VelarSDK;
   private network: StacksMainnet;
@@ -236,8 +242,33 @@ class VelarDeploymentService {
   }
 
 
-  private validateAddress(address: string): boolean {
-    return address.startsWith('SP') && address.length === 41;
+  private validateAddress(address: string | undefined): boolean {
+    if (!address) {
+      console.error('No address provided for validation');
+      return false;
+    }
+
+    // Log the address being validated
+    console.log('Validating address:', address);
+
+    // Check if it's a valid Stacks address format (mainnet or testnet)
+    // Updated length check to allow for both 39 and 40 character addresses after prefix
+    const isValid = (address.startsWith('SP') || address.startsWith('ST')) && 
+                   (address.length >= 39 && address.length <= 41) && 
+                   /^[123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz]+$/.test(address);
+
+    if (!isValid) {
+      console.error('Invalid address format:', {
+        startsWithSPorST: address.startsWith('SP') || address.startsWith('ST'),
+        length: address.length,
+        validLength: address.length >= 39 && address.length <= 41,
+        address
+      });
+    } else {
+      console.log('Address validation successful:', address);
+    }
+
+    return isValid;
   }
 
   private async executeNOCCSwap(
@@ -258,38 +289,35 @@ class VelarDeploymentService {
         outToken: 'STX'
       });
 
+      // Convert STX amount to standard units for the swap
       const stxInStandard = selectedFee / this.STX_MICRO_MULTIPLIER;
 
-      console.log('Swap amounts:', {
-        stxRequired: stxInStandard,
+      console.log('Executing swap with:', {
+        stxAmount: stxInStandard,
         noccEstimate: swapEstimate.noccAmount,
-        microSTX: selectedFee,
-        microNOCC: Math.ceil(swapEstimate.noccAmount * this.NOCC_MICRO_MULTIPLIER)
+        route: swapEstimate.route || []
       });
 
+      // Get swap response with exact output amount
       const swapResponse = await swapInstance.swap({
         amount: stxInStandard,
-        type: SwapType.TWO, // Exact output - means we want exact STX amount
-        slippage: this.slippageTolerance
-      });
+        type: SwapType.TWO, // Exact output
+        slippage: 0.05, // 5% slippage tolerance
+        route: swapEstimate.route || [] // Include the route
+      } as SwapPayload);
 
-      // Calculate NOCC amount with buffer for slippage
-      const noccAmountInMicro = Math.ceil(
-        swapEstimate.noccAmount * this.NOCC_MICRO_MULTIPLIER * (1 + this.slippageTolerance)
-      );
+      // Create post condition using the amt-in-max from swap response
+      const amtInMax = swapResponse.functionArgs[6]; // amt-in-max UIntCV
+      const amtInMaxValue = Number(amtInMax.value);
 
-      // Add safety margin for post condition
-      const postConditionAmount = Math.ceil(noccAmountInMicro * 1.20); // 20% buffer
-
-      console.log('Post condition amounts:', {
-        noccAmountInMicro,
-        postConditionAmount,
-        slippageBuffer: this.slippageTolerance,
-        safetyMargin: '20%'
+      console.log('Swap response:', {
+        amtInMaxValue,
+        functionArgs: swapResponse.functionArgs,
+        route: swapEstimate.route || []
       });
 
       const postCondition = Pc.principal(senderAddress)
-        .willSendGte(postConditionAmount) // Changed to greater than or equal
+        .willSendGte(amtInMaxValue)
         .ft(this.NOCC_CONTRACT, 'nocc');
 
       return new Promise((resolve, reject) => {
@@ -320,14 +348,30 @@ class VelarDeploymentService {
   }
 
   async deployContract(options: DeploymentOptions): Promise<DeploymentResult> {
-    const { contractName, contractCode, senderAddress, selectedFee, swapEstimate } = options;
+    const { contractName, contractCode, selectedFee, swapEstimate } = options;
   
-    if (!this.validateAddress(senderAddress)) {
-      throw new Error('Invalid sender address format');
+    // Get the address from userSession if not provided in options
+    let senderAddress = options.senderAddress;
+    if (!senderAddress) {
+      const userSession = getUserSession();
+      if (!userSession?.isUserSignedIn()) {
+        throw new Error('No wallet connected');
+      }
+      senderAddress = userSession.loadUserData().profile.stxAddress.mainnet;
     }
-    
+
+    console.log('Attempting deployment with address:', senderAddress);
+
+    if (!this.validateAddress(senderAddress)) {
+      throw new Error(
+        `Invalid sender address format: ${senderAddress}. ` +
+        `Address must be a valid Stacks address starting with SP (mainnet) or ST (testnet) ` +
+        `and be between 39-41 characters long.`
+      );
+    }
+  
     // Add validation to ensure swapEstimate exists
-    if (!swapEstimate || !swapEstimate.noccAmount) {
+    if (!swapEstimate || typeof swapEstimate.noccAmount !== 'number') {
       throw new Error('Invalid swap estimate provided');
     }
   
@@ -367,6 +411,9 @@ class VelarDeploymentService {
   
     } catch (error) {
       console.error('Deployment error:', error);
+      if (error instanceof Error) {
+        throw new Error(`Deployment failed: ${error.message}`);
+      }
       throw error;
     }
   }

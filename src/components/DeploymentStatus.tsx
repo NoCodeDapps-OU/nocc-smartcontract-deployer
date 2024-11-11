@@ -39,6 +39,7 @@ interface DeploymentStatusProps {
   swapTxId: string;
   deployTxId: string;
   timestamp: number;
+  onRemove?: () => void;
 }
 
 const SWAP_ESTIMATED_TIME = 600; // 10 minutes
@@ -274,58 +275,77 @@ const DeploymentStatus: React.FC<DeploymentStatusProps> = ({
   contractId,
   swapTxId,
   deployTxId,
-  timestamp
+  timestamp,
+  onRemove
 }) => {
   const [swapConfirmed, setSwapConfirmed] = useState<boolean>(false);
   const [swapFailed, setSwapFailed] = useState<boolean>(false);
+  const [swapDropped, setSwapDropped] = useState<boolean>(false);
   const [deployConfirmed, setDeployConfirmed] = useState<boolean>(false);
   const [deployFailed, setDeployFailed] = useState<boolean>(false);
-  const [swapProgress, setSwapProgress] = useState<number>(0);
-  const [deployProgress, setDeployProgress] = useState<number>(0);
-
-  const checkTransactionStatus = async (txId: string): Promise<{isConfirmed: boolean, isFailed: boolean}> => {
-    try {
-      const response = await fetch(`https://api.mainnet.hiro.so/extended/v1/tx/${txId}`);
-      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-      const data = await response.json();
-      
-      return {
-        isConfirmed: data.tx_status === 'success',
-        isFailed: data.tx_status.startsWith('abort')
-      };
-    } catch (error) {
-      console.error('Error checking transaction status:', error);
-      return { isConfirmed: false, isFailed: false };
-    }
-  };
+  const [deployDropped, setDeployDropped] = useState<boolean>(false);
 
   useEffect(() => {
+    let isMounted = true;
+    let timeoutId: NodeJS.Timeout;
+
     const checkStatus = async () => {
-      if (!swapConfirmed && !swapFailed) {
-        const swapStatus = await checkTransactionStatus(swapTxId);
-        if (swapStatus.isConfirmed) {
+      if (!isMounted) return;
+      
+      try {
+        // Check swap transaction
+        const swapResponse = await fetch(`/api/check-transaction?txId=${swapTxId}`);
+        const swapData = await swapResponse.json();
+        
+        if (swapData.tx_status === 'success') {
           setSwapConfirmed(true);
-          setSwapProgress(100);
-        } else if (swapStatus.isFailed) {
+        } else if (swapData.tx_status === 'dropped') {
+          setSwapDropped(true);
+        } else if (swapData.tx_status?.startsWith('abort')) {
           setSwapFailed(true);
         }
-      }
-      
-      if (!deployConfirmed && !deployFailed && (swapConfirmed || swapFailed)) {
-        const deployStatus = await checkTransactionStatus(deployTxId);
-        if (deployStatus.isConfirmed) {
+
+        // Check deploy transaction
+        const deployResponse = await fetch(`/api/check-transaction?txId=${deployTxId}`);
+        const deployData = await deployResponse.json();
+        
+        if (deployData.tx_status === 'success') {
           setDeployConfirmed(true);
-          setDeployProgress(100);
-        } else if (deployStatus.isFailed) {
+        } else if (deployData.tx_status === 'dropped') {
+          setDeployDropped(true);
+        } else if (deployData.tx_status?.startsWith('abort')) {
           setDeployFailed(true);
         }
+
+        // If both transactions are dropped, remove from history
+        if (swapDropped && deployDropped && onRemove) {
+          onRemove();
+          return;
+        }
+
+        // Continue polling if neither transaction is confirmed/failed/dropped
+        if (!swapConfirmed && !swapFailed && !swapDropped || 
+            !deployConfirmed && !deployFailed && !deployDropped) {
+          timeoutId = setTimeout(checkStatus, 10000);
+        }
+      } catch (error) {
+        console.warn('Error checking status:', error);
+        timeoutId = setTimeout(checkStatus, 10000);
       }
     };
 
-    const interval = setInterval(checkStatus, 5000);
     checkStatus();
-    return () => clearInterval(interval);
-  }, [swapTxId, deployTxId, swapConfirmed, swapFailed, deployConfirmed, deployFailed]);
+
+    return () => {
+      isMounted = false;
+      if (timeoutId) clearTimeout(timeoutId);
+    };
+  }, [swapTxId, deployTxId, onRemove]);
+
+  // If both transactions are dropped, don't render anything
+  if (swapDropped && deployDropped) {
+    return null;
+  }
 
   return (
     <Container maxW="container.lg" p={0}>
@@ -393,7 +413,7 @@ const DeploymentStatus: React.FC<DeploymentStatusProps> = ({
               isConfirmed={swapConfirmed}
               isFailed={swapFailed}
               timestamp={timestamp}
-              progress={swapProgress}
+              progress={0}
               estimatedTime={SWAP_ESTIMATED_TIME}
             />
             <TransactionCard
@@ -402,7 +422,7 @@ const DeploymentStatus: React.FC<DeploymentStatusProps> = ({
               isConfirmed={deployConfirmed}
               isFailed={deployFailed}
               timestamp={timestamp}
-              progress={deployProgress}
+              progress={0}
               estimatedTime={DEPLOY_ESTIMATED_TIME}
             />
           </VStack>

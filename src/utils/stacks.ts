@@ -32,11 +32,11 @@ export async function getNOCCBalance(address: string): Promise<string> {
         functionName: 'get-balance',
         functionArgs: [standardPrincipalCV(address)],
         senderAddress: address,
+        network: 'mainnet',
       });
   
       if (result) {
         const balanceString = cvToString(result as ClarityValue);
-        // console.log('Raw balance string:', balanceString);
         return balanceString;
       }
       return '0';
@@ -54,24 +54,22 @@ export async function getNOCCBalance(address: string): Promise<string> {
       
       // Get the raw balance in micro-NOCC
       const microBalance = parseInt(match[1], 10);
-    //   console.log('Raw micro-NOCC balance:', microBalance);
       
-      // Convert to NOCC (divide by 1,000,000)
-      const noccBalance = microBalance / 1_000_000;
-      // console.log('NOCC balance:', noccBalance);
+      // Convert to NOCC (divide by 1,000 since NOCC has 3 decimals)
+      const noccBalance = microBalance / 1_000;
       
-      // Now format with k/M suffixes based on NOCC amount
-      // 100,000 NOCC = 100M micro-NOCC
-      if (noccBalance >= 100_000) {
-        return `${(noccBalance / 1_000).toFixed(1)}M`;
-      // 100 NOCC = 100K micro-NOCC
-      } else if (noccBalance >= 100) {
-        return `${noccBalance.toFixed(1)}K`;
+      // Format with k/M/B suffixes based on NOCC amount
+      if (noccBalance >= 1_000_000_000) {
+        return `${(noccBalance / 1_000_000_000).toFixed(1)}B`;
+      } else if (noccBalance >= 1_000_000) {
+        return `${(noccBalance / 1_000_000).toFixed(1)}M`;
+      } else if (noccBalance >= 1_000) {
+        return `${(noccBalance / 1_000).toFixed(1)}k`;
       } else {
         return noccBalance.toFixed(1);
       }
     } catch (error) {
-      console.error('Error formatting balance:', error);
+      console.error('Error formatting NOCC balance:', error);
       return '0';
     }
   }
@@ -112,34 +110,79 @@ export async function fetchAccountNonce(address: string): Promise<bigint> {
 
 // Add this function to get STX balance
 export async function getSTXBalance(address: string): Promise<string> {
-    try {
-      const response = await fetch(`https://api.mainnet.hiro.so/extended/v1/address/${address}/stx`);
-      const data = await response.json();
-      return data.balance;
-    } catch (error) {
-      console.error('Error fetching STX balance:', error);
-      return '0';
-    }
-  }
-  
-  // Add this function to format STX amount
-  export function formatSTXAmount(balanceStr: string): string {
-    try {
-      const balance = parseInt(balanceStr, 10);
-      const stxBalance = balance / 1_000_000; // Convert microSTX to STX
-      
-      if (stxBalance >= 100_000) {
-        return `${(stxBalance / 1_000).toFixed(1)}M`;
-      } else if (stxBalance >= 100) {
-        return `${stxBalance.toFixed(1)}K`;
-      } else {
-        return stxBalance.toFixed(1);
+  try {
+    const maxRetries = 3;
+    let retryCount = 0;
+    let lastError;
+
+    while (retryCount < maxRetries) {
+      try {
+        const response = await fetch(
+          `https://api.mainnet.hiro.so/extended/v1/address/${address}/stx`,
+          {
+            headers: {
+              'Accept': 'application/json',
+            },
+            mode: 'cors',
+          }
+        );
+
+        if (response.status === 429) {
+          // Rate limited - wait and retry
+          const waitTime = Math.pow(2, retryCount) * 1000;
+          await new Promise(resolve => setTimeout(resolve, waitTime));
+          retryCount++;
+          continue;
+        }
+
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const data = await response.json();
+        return data.balance;
+      } catch (error) {
+        lastError = error;
+        retryCount++;
+        if (retryCount === maxRetries) break;
+        
+        // Wait before retrying
+        const waitTime = Math.pow(2, retryCount) * 1000;
+        await new Promise(resolve => setTimeout(resolve, waitTime));
       }
-    } catch (error) {
-      console.error('Error formatting STX balance:', error);
-      return '0';
     }
+
+    throw lastError;
+  } catch (error) {
+    console.error('Error fetching STX balance:', error);
+    return '0';
   }
+}
+
+// Add this function to format STX amount
+export function formatSTXAmount(balanceStr: string): string {
+  try {
+    const balance = parseInt(balanceStr, 10);
+    const stxBalance = balance / 1_000_000; // Convert microSTX to STX
+    
+    // Format with k/M/B suffixes based on STX amount
+    if (stxBalance >= 1_000_000_000) {
+      return `${(stxBalance / 1_000_000_000).toFixed(1)}B`;
+    } else if (stxBalance >= 1_000_000) {
+      return `${(stxBalance / 1_000_000).toFixed(1)}M`;
+    } else if (stxBalance >= 1_000) {
+      return `${(stxBalance / 1_000).toFixed(1)}k`;
+    } else {
+      // For values less than 1000, show up to 3 decimal places
+      // but trim trailing zeros
+      const formatted = stxBalance.toFixed(3);
+      return formatted.replace(/\.?0+$/, '');
+    }
+  } catch (error) {
+    console.error('Error formatting STX balance:', error);
+    return '0';
+  }
+}
 
 export const hasEnoughNOCC = async (address: string, requiredAmount: number): Promise<boolean> => {
   try {

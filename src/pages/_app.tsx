@@ -148,14 +148,14 @@ function MyApp({ Component, pageProps }: AppProps): ReactNode {
   }, []);
 
   if (!mounted) {
-    return null;
+    return <div style={{ visibility: 'hidden' }}>Loading...</div>;
   }
 
   return (
     <>
       <Head>
         <title>NOCC Deployer</title>
-        <link rel="icon" href="/nocc-logo.png" />
+        <link rel="icon" href="/nocc-logo.png" type="image/png" />
       </Head>
       <ChakraProvider theme={theme}>
         {userSessionState ? (

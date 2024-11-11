@@ -1,208 +1,264 @@
 import {
-    Modal,
-    ModalOverlay,
-    ModalContent,
-    ModalHeader,
-    ModalBody,
-    ModalFooter,
-    Button,
-    Text,
-    useToast,
-    VStack,
-    Alert,
-    AlertIcon,
-  } from '@chakra-ui/react';
-  import { useEffect, useState, useRef } from 'react';
-  import { GasFeeSelector } from './GasFeeSelector';
-  import { getUserSession } from '../utils/stacks';
-  import { hasEnoughNOCC } from '../utils/stacks';
+  Modal,
+  ModalOverlay,
+  ModalContent,
+  ModalHeader,
+  ModalBody,
+  ModalFooter,
+  Button,
+  Text,
+  VStack,
+  Box,
+  HStack,
+  RadioGroup,
+  Radio,
+  Alert,
+  AlertIcon,
+  NumberInput,
+  NumberInputField,
+} from '@chakra-ui/react';
+import { useState, useEffect } from 'react';
+import { velarSDK } from '../config/velar';
+import { getUserSession } from '../utils/stacks';
+import { SwapType } from '@velarprotocol/velar-sdk';
 
-  interface SwapEstimate {
-    noccAmount: number;
-    route?: string[];
-  }
-  
-  interface DeploymentModalProps {
-    isOpen: boolean;
-    onClose: () => void;
-    onConfirm: (fee: number, swapEstimate: SwapEstimate) => void;
-    contractData: {
-      name: string;
-      code: string;
-    };
-  }
-  
-  const STX_MICRO_MULTIPLIER = 1_000_000; // STX has 6 decimals
-  
-  const BalanceWarning: React.FC<{ noccAmount: number }> = ({ noccAmount }) => {
-    const [hasBalance, setHasBalance] = useState<boolean>(true);
-    
-    useEffect(() => {
-      const checkBalance = async () => {
-        const userSession = getUserSession();
-        if (userSession?.isUserSignedIn()) {
-          const address = userSession.loadUserData().profile.stxAddress.mainnet;
-          const sufficient = await hasEnoughNOCC(address, noccAmount);
-          setHasBalance(sufficient);
-        }
-      };
-      
-      checkBalance();
-    }, [noccAmount]);
-
-    if (hasBalance) return null;
-
-    return (
-      <Alert status="warning" variant="left-accent">
-        <AlertIcon />
-        <VStack align="start" spacing={1}>
-          <Text fontWeight="bold">Insufficient NOCC Balance</Text>
-          <Text fontSize="sm">
-            You need at least {noccAmount.toFixed(3)} NOCC tokens to proceed with this deployment.
-            Please acquire NOCC tokens before attempting to deploy.
-          </Text>
-        </VStack>
-      </Alert>
-    );
+interface DeploymentModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  onConfirm: (fee: number, swapEstimate: { noccAmount: number; route?: string[] }) => void;
+  contractData: {
+    name: string;
+    code: string;
   };
-  
-  export const DeploymentModal: React.FC<DeploymentModalProps> = ({
-    isOpen,
-    onClose,
-    onConfirm,
-    contractData,
-  }) => {
-    const [selectedFee, setSelectedFee] = useState<number>(0);
-    const [currentSwapEstimate, setCurrentSwapEstimate] = useState<SwapEstimate | null>(null);
-  
-    const selectedFeeRef = useRef<number>(0);
-    const currentSwapEstimateRef = useRef<SwapEstimate | null>(null);
-  
-    const toast = useToast();
-  
-    const handleFeeAndEstimateSelect = (fee: number, estimate: SwapEstimate) => {
-      console.log('Selected:', { fee, noccAmount: estimate.noccAmount });
-      setSelectedFee(fee);
-      setCurrentSwapEstimate(estimate);
-      selectedFeeRef.current = fee;
-      currentSwapEstimateRef.current = estimate;
-    };
-  
-    const feeInSTX = selectedFee / STX_MICRO_MULTIPLIER;
-    const isFeeValid = feeInSTX >= 0.5;
-  
-    const handleConfirm = () => {
-      if (!currentSwapEstimateRef.current) {
-        console.error('No swap estimate available');
-        toast({
-            title: 'No Swap Estimate',
-            description: 'Please select a gas fee to proceed.',
-            status: 'error',
-            duration: 5000,
-            isClosable: true,
-            position: 'bottom-right',
-        });
-        return;
-      }
-  
-      if (!isFeeValid) {
-        toast({
-            title: 'Invalid Gas Fee',
-            description: 'Gas fee cannot be less than 0.5 STX.',
-            status: 'error',
-            duration: 5000,
-            isClosable: true,
-            position: 'bottom-right',
-        });
-        return;
-      }
-  
-      console.log('Confirming with exact values:', {
-        selectedFee: selectedFeeRef.current,
-        noccAmount: currentSwapEstimateRef.current.noccAmount,
-        route: currentSwapEstimateRef.current.route,
+}
+
+const GAS_FEE_OPTIONS = {
+  low: 0.5,      // 0.5 STX
+  standard: 0.75, // 0.75 STX
+  high: 2.0      // 2.0 STX
+};
+
+export const DeploymentModal: React.FC<DeploymentModalProps> = ({
+  isOpen,
+  onClose,
+  onConfirm,
+  contractData,
+}) => {
+  const [selectedFee, setSelectedFee] = useState<'low' | 'standard' | 'high' | 'custom'>('standard');
+  const [customFee, setCustomFee] = useState<string>('0.75');
+  const [swapEstimates, setSwapEstimates] = useState<{
+    [key: string]: { noccAmount: number; route?: string[] }
+  }>({});
+  const [customSwapEstimate, setCustomSwapEstimate] = useState<{ noccAmount: number; route?: string[] } | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchSwapAmount = async (stxAmount: number) => {
+    try {
+      const userSession = getUserSession();
+      if (!userSession?.isUserSignedIn()) return null;
+
+      const senderAddress = userSession.loadUserData().profile.stxAddress.mainnet;
+      
+      const swapInstance = await velarSDK.getSwapInstance({
+        account: senderAddress,
+        inToken: 'NOCC',
+        outToken: 'STX'
       });
-  
-      onConfirm(selectedFeeRef.current, currentSwapEstimateRef.current);
-      onClose();
+
+      const result = await swapInstance.getComputedAmount({
+        amount: stxAmount,
+        type: SwapType.TWO,
+        slippage: 0.05
+      });
+
+      if (!result) {
+        throw new Error('Invalid swap result');
+      }
+
+      const noccAmount = Number(result.value || 0) * 1000 * 1000;
+
+      console.log('Swap amount computed:', {
+        stxAmount,
+        noccAmount,
+        route: result.route,
+        rawValue: result.value
+      });
+
+      return {
+        noccAmount,
+        route: result.route || []
+      };
+    } catch (error) {
+      console.error('Error fetching swap amount:', error);
+      return null;
+    }
+  };
+
+  useEffect(() => {
+    const fetchEstimates = async () => {
+      try {
+        const estimates = await Promise.all(
+          Object.entries(GAS_FEE_OPTIONS).map(async ([level, stxAmount]) => {
+            const result = await fetchSwapAmount(stxAmount);
+            return [level, result];
+          })
+        );
+
+        const validEstimates = Object.fromEntries(
+          estimates.filter(([_, result]) => result !== null)
+        );
+
+        setSwapEstimates(validEstimates);
+        setIsLoading(false);
+      } catch (error) {
+        console.error('Error fetching estimates:', error);
+        setError('Failed to fetch swap estimates');
+        setIsLoading(false);
+      }
     };
-  
-    return (
-        <Modal isOpen={isOpen} onClose={onClose} size="xl" isCentered>
-            <ModalOverlay backdropFilter="blur(4px)" />
-            <ModalContent bg="gray.900" border="1px" borderColor="gray.700">
-                <ModalHeader 
-              borderBottom="1px" 
-              borderColor="gray.700"
-              display="flex"
-              justifyContent="space-between"
-              alignItems="center"
-            >
-              <VStack align="flex-start" spacing={1}>
-                <Text>Deploy Contract</Text>
-                <Text fontSize="sm" color="gray.400">
-                  Select gas fee and confirm deployment
-                </Text>
+
+    if (isOpen) {
+      fetchEstimates();
+    }
+  }, [isOpen]);
+
+  const handleCustomFeeChange = async (valueString: string) => {
+    setCustomFee(valueString);
+    const numValue = parseFloat(valueString);
+    
+    if (!isNaN(numValue) && numValue > 0) {
+      const estimate = await fetchSwapAmount(numValue);
+      if (estimate) {
+        setCustomSwapEstimate(estimate);
+      }
+    } else {
+      setCustomSwapEstimate(null);
+    }
+  };
+
+  const handleConfirm = () => {
+    let fee: number;
+    let estimate: { noccAmount: number; route?: string[] } | null;
+
+    if (selectedFee === 'custom') {
+      fee = parseFloat(customFee) * 1_000_000; // Convert to microSTX
+      estimate = customSwapEstimate;
+    } else {
+      fee = GAS_FEE_OPTIONS[selectedFee] * 1_000_000;
+      estimate = swapEstimates[selectedFee];
+    }
+
+    if (estimate) {
+      onConfirm(fee, estimate);
+      onClose();
+    }
+  };
+
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} size="xl" isCentered>
+      <ModalOverlay backdropFilter="blur(4px)" />
+      <ModalContent bg="gray.900" border="1px" borderColor="gray.700">
+        <ModalHeader borderBottom="1px" borderColor="gray.700">
+          Deploy Contract
+        </ModalHeader>
+
+        <ModalBody py={6}>
+          {error ? (
+            <Alert status="error" variant="left-accent">
+              <AlertIcon />
+              {error}
+            </Alert>
+          ) : isLoading ? (
+            <Text>Loading swap rates...</Text>
+          ) : (
+            <RadioGroup value={selectedFee} onChange={(value: any) => setSelectedFee(value)}>
+              <VStack spacing={3} align="stretch">
+                {Object.entries(GAS_FEE_OPTIONS).map(([speed, stxAmount]) => (
+                  <Box
+                    key={speed}
+                    p={4}
+                    border="1px"
+                    borderRadius="lg"
+                    borderColor={selectedFee === speed ? "orange.500" : "gray.700"}
+                    bg={selectedFee === speed ? "gray.800" : "gray.900"}
+                    cursor="pointer"
+                    onClick={() => setSelectedFee(speed as any)}
+                  >
+                    <HStack justify="space-between">
+                      <Radio value={speed} colorScheme="orange">
+                        <Text textTransform="capitalize" color="white">{speed}</Text>
+                      </Radio>
+                      <VStack align="end" spacing={1}>
+                        <Text color="white">{stxAmount.toFixed(2)} STX</Text>
+                        <Text fontSize="sm" color="gray.400">
+                          ≈ {(swapEstimates[speed]?.noccAmount || 0).toFixed(2)} NOCC
+                        </Text>
+                      </VStack>
+                    </HStack>
+                  </Box>
+                ))}
+
+                {/* Custom Fee Option */}
+                <Box
+                  p={4}
+                  border="1px"
+                  borderRadius="lg"
+                  borderColor={selectedFee === 'custom' ? "orange.500" : "gray.700"}
+                  bg={selectedFee === 'custom' ? "gray.800" : "gray.900"}
+                  cursor="pointer"
+                  onClick={() => setSelectedFee('custom')}
+                >
+                  <HStack justify="space-between" align="start">
+                    <Radio value="custom" colorScheme="orange">
+                      <Text color="white">Custom</Text>
+                    </Radio>
+                    <VStack align="end" spacing={1}>
+                      <NumberInput
+                        value={customFee}
+                        onChange={handleCustomFeeChange}
+                        min={0.1}
+                        precision={2}
+                        step={0.1}
+                        isDisabled={selectedFee !== 'custom'}
+                      >
+                        <NumberInputField
+                          bg="gray.800"
+                          border="1px"
+                          borderColor="gray.600"
+                          color="white"
+                          w="120px"
+                          textAlign="right"
+                        />
+                      </NumberInput>
+                      {selectedFee === 'custom' && customSwapEstimate && (
+                        <Text fontSize="sm" color="gray.400">
+                          ≈ {(customSwapEstimate.noccAmount || 0).toFixed(2)} NOCC
+                        </Text>
+                      )}
+                    </VStack>
+                  </HStack>
+                </Box>
               </VStack>
-            </ModalHeader>
-    
-            <ModalBody py={6}>
-              <GasFeeSelector
-                contractCode={contractData.code}
-                contractData={contractData}
-                onFeeSelect={handleFeeAndEstimateSelect}
-              />
-            </ModalBody>
-    
-            <ModalFooter 
-        borderTop="1px" 
-        borderColor="gray.700" 
-        gap={3}
-        px={6}
-        py={4}
-      >
-        <Button 
-          variant="ghost" 
-          onClick={onClose}
-          color="gray.300"
-          _hover={{
-            bg: 'transparent',
-            color: 'red.500',
-          }}
-          _active={{
-            bg: 'transparent',
-            color: 'red.600',
-          }}
-        >
-          Cancel
-        </Button>
-        <Button
-          onClick={handleConfirm}
-          isDisabled={!selectedFee || !currentSwapEstimate || !isFeeValid}
-          height="54px"
-          width="200px"
-          fontSize="md"
-          bg="#FF9F0A"
-          color="black"
-          _hover={{
-            bg: '#FFB340',
-            _disabled: {
-              bg: '#FF9F0A',
-              opacity: 0.6,
-            }
-          }}
-          _active={{
-            bg: '#F59300',
-          }}
-          _disabled={{
-            opacity: 0.6,
-            cursor: 'not-allowed',
-          }}
-        >
-          Confirm & Deploy
-        </Button>
-      </ModalFooter>
-    </ModalContent>
+            </RadioGroup>
+          )}
+        </ModalBody>
+
+        <ModalFooter borderTop="1px" borderColor="gray.700" gap={3}>
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            onClick={handleConfirm}
+            isDisabled={isLoading || !!error || (selectedFee === 'custom' && !customSwapEstimate)}
+            bg="#FF9F0A"
+            color="black"
+            _hover={{ bg: '#FFB340' }}
+          >
+            Confirm & Deploy
+          </Button>
+        </ModalFooter>
+      </ModalContent>
     </Modal>
   );
 };

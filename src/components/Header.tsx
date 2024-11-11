@@ -11,22 +11,44 @@ const Header = () => {
   
   useEffect(() => {
     const userSession = getUserSession();
+    let isMounted = true;
+    let intervalId: NodeJS.Timeout;
+
     async function fetchBalances() {
       if (userSession?.isUserSignedIn()) {
-        const address = userSession.loadUserData().profile.stxAddress.mainnet;
-        setWalletAddress(address);
-        
-        const noccBal = await getNOCCBalance(address);
-        const stxBal = await getSTXBalance(address);
-        setNoccBalance(noccBal);
-        setStxBalance(stxBal);
+        try {
+          const address = userSession.loadUserData().profile.stxAddress.mainnet;
+          if (!isMounted) return;
+          setWalletAddress(address);
+          
+          // Fetch both balances concurrently
+          const [noccBal, stxBal] = await Promise.all([
+            getNOCCBalance(address),
+            getSTXBalance(address)
+          ]);
+
+          if (!isMounted) return;
+          
+          setNoccBalance(noccBal);
+          setStxBalance(stxBal);
+        } catch (error) {
+          console.warn('Error fetching balances:', error);
+        }
       }
     }
 
+    // Initial fetch
     fetchBalances();
-    const intervalId = setInterval(fetchBalances, 10000);
     
-    return () => clearInterval(intervalId);
+    // Set up polling interval for live updates
+    intervalId = setInterval(fetchBalances, 10000); // Poll every 10 seconds
+    
+    return () => {
+      isMounted = false;
+      if (intervalId) {
+        clearInterval(intervalId);
+      }
+    };
   }, []);
 
   const formatAddress = (address: string) => {
@@ -44,6 +66,11 @@ const Header = () => {
   const toggleBalance = () => {
     setShowSTX(prev => !prev);
   };
+
+  // Format the balance display with proper decimals
+  const displayBalance = showSTX ? 
+    `${formatSTXAmount(stxBalance)} STX` : 
+    `${formatNOCCAmount(noccBalance)} NOCC`;
 
   return (
     <Box 
@@ -82,10 +109,7 @@ const Header = () => {
                 _hover={{ opacity: 0.8 }}
                 transition="opacity 0.2s"
               >
-                {showSTX 
-                  ? `${formatSTXAmount(stxBalance)} STX` 
-                  : `${formatNOCCAmount(noccBalance)} NOCC`
-                }
+                {displayBalance}
               </Text>
             </Flex>
             <Button

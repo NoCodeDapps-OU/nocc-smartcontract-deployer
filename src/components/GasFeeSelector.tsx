@@ -251,8 +251,8 @@ export const GasFeeSelector: React.FC<GasFeeSelectorProps> = ({
   
       const swapInstance = await velarSDK.getSwapInstance({
         account: senderAddress,
-        inToken: 'STX',    // Swap from STX
-        outToken: 'NOCC'   // To NOCC
+        inToken: 'NOCC',    // Swap from NOCC
+        outToken: 'STX',    // To STX
       });
   
       // STX amount in standard units
@@ -260,15 +260,15 @@ export const GasFeeSelector: React.FC<GasFeeSelectorProps> = ({
   
       const swapEstimate = await swapInstance.getComputedAmount({
         amount: stxAmountStandard,
-        type: 1, // SwapType.ONE for exact input
-        slippage: 0.01
+        type: 2, // SwapType.TWO for exact output
+        slippage: 0.04 // 4% slippage to match Velar UI
       });
   
       const noccAmount = Number(swapEstimate.value || 0);
   
       const newSwapEstimate = {
         noccAmount,
-        route: swapEstimate.route
+        route: swapEstimate.route // Include route in estimate
       };
   
       setCustomSwapEstimate(newSwapEstimate);

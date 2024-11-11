@@ -132,10 +132,11 @@ export default function DeployButton({ contractData, onDeploymentStart }: Deploy
     
       const userData = userSession.loadUserData();
       const senderAddress = userData.profile.stxAddress.mainnet;
-      const privateKey = userData.appPrivateKey;
     
-      if (!privateKey) {
-        throw new Error('Unable to get private key from session');
+      console.log('Deploying with address:', senderAddress);
+    
+      if (!senderAddress || !senderAddress.startsWith('SP')) {
+        throw new Error('Invalid wallet address. Please ensure you are connected with a mainnet wallet.');
       }
     
       setDeploymentStep('Initiating NOCC swap for deployment fees...');
@@ -143,8 +144,8 @@ export default function DeployButton({ contractData, onDeploymentStart }: Deploy
       const result = await velarDeploymentService.deployContract({
         contractName: contractData.name,
         contractCode: contractData.code,
-        senderAddress,
-        senderKey: privateKey,
+        senderAddress: senderAddress,
+        senderKey: userData.appPrivateKey || '',
         selectedFee: fee,
         swapEstimate: swapEstimate
       });
