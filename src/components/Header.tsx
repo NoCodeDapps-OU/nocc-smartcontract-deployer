@@ -1,6 +1,7 @@
 import { Box, Flex, Text, Button, useClipboard, HStack } from '@chakra-ui/react';
 import { useEffect, useState } from 'react';
 import { getUserSession, getNOCCBalance, formatNOCCAmount, getSTXBalance, formatSTXAmount } from '../utils/stacks';
+import { useToast } from '@chakra-ui/react';
 
 const Header = () => {
   const [noccBalance, setNoccBalance] = useState<string>('0');
@@ -8,6 +9,8 @@ const Header = () => {
   const [walletAddress, setWalletAddress] = useState<string>('');
   const [showSTX, setShowSTX] = useState<boolean>(false);
   const { hasCopied, onCopy } = useClipboard(walletAddress);
+  const [isOffline, setIsOffline] = useState(false);
+  const toast = useToast();
   
   useEffect(() => {
     const userSession = getUserSession();
@@ -21,7 +24,6 @@ const Header = () => {
           if (!isMounted) return;
           setWalletAddress(address);
           
-          // Fetch both balances concurrently
           const [noccBal, stxBal] = await Promise.all([
             getNOCCBalance(address),
             getSTXBalance(address)
@@ -29,10 +31,33 @@ const Header = () => {
 
           if (!isMounted) return;
           
+          if (noccBal === 'OFFLINE' || stxBal === 'OFFLINE') {
+            toast({
+              title: 'Network Error',
+              description: 'Unable to fetch balances - Please check your internet connection',
+              status: 'error',
+              duration: null,
+              isClosable: true,
+              position: 'top-right'
+            });
+            return;
+          }
+
           setNoccBalance(noccBal);
           setStxBalance(stxBal);
         } catch (error) {
-          console.warn('Error fetching balances:', error);
+          if (!window.navigator.onLine) {
+            toast({
+              title: 'Network Error',
+              description: 'Unable to fetch balances - Please check your internet connection',
+              status: 'error',
+              duration: null,
+              isClosable: true,
+              position: 'top-right'
+            });
+          } else {
+            console.warn('Error fetching balances:', error);
+          }
         }
       }
     }
@@ -40,14 +65,28 @@ const Header = () => {
     // Initial fetch
     fetchBalances();
     
-    // Set up polling interval for live updates
-    intervalId = setInterval(fetchBalances, 10000); // Poll every 10 seconds
+    // Set up polling interval for live updates - every 15 seconds
+    intervalId = setInterval(fetchBalances, 15000);
     
     return () => {
       isMounted = false;
       if (intervalId) {
         clearInterval(intervalId);
       }
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleOnline = () => setIsOffline(false);
+    const handleOffline = () => setIsOffline(true);
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    setIsOffline(!window.navigator.onLine);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
     };
   }, []);
 
@@ -68,9 +107,11 @@ const Header = () => {
   };
 
   // Format the balance display with proper decimals
-  const displayBalance = showSTX ? 
-    `${formatSTXAmount(stxBalance)} STX` : 
-    `${formatNOCCAmount(noccBalance)} NOCC`;
+  const displayBalance = isOffline ? 
+    'Offline' : 
+    showSTX ? 
+      `${formatSTXAmount(stxBalance)} STX` : 
+      `${formatNOCCAmount(noccBalance)} NOCC`;
 
   return (
     <Box 

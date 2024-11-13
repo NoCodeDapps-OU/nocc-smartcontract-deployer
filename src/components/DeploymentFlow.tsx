@@ -20,8 +20,29 @@ export const TimeDisplay: React.FC<{ elapsed: number }> = ({ elapsed }) => {
   }
 };
 
-// Transaction stages in order
+// Add these constants at the top of the file
 const TX_STAGES = ['mempool', 'contract', 'mining', 'anchor'];
+
+// Add the calculateStage function
+const calculateStage = (txStatus: string): number => {
+  if (!txStatus) return 0;
+  
+  switch (txStatus) {
+    case 'pending':
+      return 1; // Contract stage
+    case 'success':
+      return TX_STAGES.length - 1; // Anchored stage
+    case 'dropped':
+    case 'abort_by_response':
+    case 'abort_by_post_condition':
+      return 1; // Failed at contract stage
+    default:
+      if (txStatus.startsWith('abort')) {
+        return 1; // Any other abort is at contract stage
+      }
+      return 0; // Default to mempool
+  }
+};
 
 interface TransactionFlowProps {
   txId: string;
@@ -265,54 +286,63 @@ const TransactionFlow = ({ txId, type }: TransactionFlowProps) => {
 
   useEffect(() => {
     let isMounted = true;
+    let timeoutId: NodeJS.Timeout;
     let retryCount = 0;
     const MAX_RETRIES = 3;
-    const POLLING_INTERVAL = 15000;
+    const POLL_INTERVAL = 5000;
 
     const checkStatus = async () => {
-      if (!isMounted) return;
-      
+      if (!isMounted || !txId?.trim()) return;
+
       try {
         const response = await fetch(`/api/check-transaction?txId=${txId}`);
+        
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
         const data = await response.json();
-
+        
         if (isMounted) {
-          let currentStage = 0;
-          let failedStage: number | undefined = undefined;
-
-          if (data.tx_status === 'success') {
-            currentStage = TX_STAGES.length - 1;
-          } else if (data.tx_status === 'pending') {
-            currentStage = 1;
-          } else if (data.tx_status?.startsWith('abort')) {
-            const stageNumber = typeof data.currentStage === 'number' ? data.currentStage : 1;
-            failedStage = stageNumber;
-            currentStage = stageNumber;
-          }
-
-          setTxStatus(prev => ({
-            ...prev,
-            currentStage,
-            failedStage,
+          // Update status
+          const newStatus = {
+            ...txStatus,
             isConfirmed: data.tx_status === 'success',
             isFailed: data.tx_status?.startsWith('abort') || data.tx_status === 'dropped',
             burnBlockHeight: data.burn_block_height,
-            errorReason: data.tx_status?.startsWith('abort') ? 
-              formatClarityError(data.tx_result?.repr || data.tx_result?.raw_result) : 
-              data.tx_status === 'dropped' ? 'Transaction dropped' : undefined
-          }));
+            currentStage: calculateStage(data.tx_status),
+          };
+
+          setTxStatus(newStatus);
+
+          // Stop polling if transaction is complete
+          if (newStatus.isConfirmed || newStatus.isFailed) {
+            return;
+          }
+
+          // Reset retry count on successful response
+          retryCount = 0;
         }
       } catch (error) {
         console.warn('Error checking tx status:', error);
+        retryCount++;
+        
+        if (retryCount >= MAX_RETRIES) {
+          return; // Stop polling after max retries
+        }
+      }
+
+      // Continue polling if needed
+      if (isMounted && !txStatus.isConfirmed && !txStatus.isFailed) {
+        timeoutId = setTimeout(checkStatus, POLL_INTERVAL);
       }
     };
 
     checkStatus();
-    const interval = setInterval(checkStatus, POLLING_INTERVAL);
 
     return () => {
       isMounted = false;
-      clearInterval(interval);
+      if (timeoutId) clearTimeout(timeoutId);
     };
   }, [txId]);
 

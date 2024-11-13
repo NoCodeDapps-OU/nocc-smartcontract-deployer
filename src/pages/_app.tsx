@@ -1,10 +1,13 @@
-import { ChakraProvider, extendTheme } from '@chakra-ui/react';
+import { ChakraProvider, extendTheme, useToast } from '@chakra-ui/react';
 import { AppProps } from 'next/app';
 import { Connect } from '@stacks/connect-react';
 import { UserSession, AppConfig } from '@stacks/auth';
 import type { ReactNode } from 'react';
 import { useEffect, useState } from 'react';
 import Head from 'next/head';
+import { usePageTransitions } from '../utils/page-transitions';
+import { optimizePerformance } from '../utils/performance';
+import PageTransition from '../components/PageTransition';
 
 const theme = extendTheme({
   colors: {
@@ -137,14 +140,100 @@ const theme = extendTheme({
 
 const appConfig = new AppConfig(['store_write', 'publish_data']);
 
+// Add this helper function
+const initializeStacksProvider = () => {
+  try {
+    // Check if provider is already defined
+    if ((window as any).StacksProvider) {
+      return;
+    }
+
+    // Create a configurable property descriptor
+    Object.defineProperty(window, 'StacksProvider', {
+      configurable: true,
+      writable: true,
+      value: null
+    });
+
+  } catch (error) {
+    console.warn('Stacks provider already initialized');
+  }
+};
+
 function MyApp({ Component, pageProps }: AppProps): ReactNode {
   const [mounted, setMounted] = useState(false);
   const [userSessionState, setUserSessionState] = useState<UserSession | null>(null);
+  const toast = useToast();
+
+  usePageTransitions();
 
   useEffect(() => {
-    setMounted(true);
-    const session = new UserSession({ appConfig });
-    setUserSessionState(session);
+    optimizePerformance();
+  }, []);
+
+  useEffect(() => {
+    try {
+      // Add initial transition
+      if (typeof window !== 'undefined') {
+        document.body.style.transition = 'opacity 0.3s ease-in-out';
+        document.body.style.opacity = '0.95';
+      }
+
+      initializeStacksProvider();
+      
+      setMounted(true);
+      const session = new UserSession({ appConfig });
+      setUserSessionState(session);
+
+      // Smooth fade in after initialization
+      requestAnimationFrame(() => {
+        if (typeof window !== 'undefined') {
+          document.body.style.opacity = '1';
+        }
+      });
+    } catch (error) {
+      toast({
+        title: 'Connection Error',
+        description: 'Unable to initialize wallet connection. Please refresh the page.',
+        status: 'error',
+        duration: null,
+        isClosable: true,
+        position: 'top-right'
+      });
+    }
+  }, []);
+
+  // Add error boundary
+  useEffect(() => {
+    const handleError = (event: ErrorEvent) => {
+      if (event.error?.toString().includes('StacksProvider')) {
+        event.preventDefault();
+        toast({
+          title: 'Provider Error',
+          description: 'Stacks provider error occurred',
+          status: 'error',
+          duration: 5000,
+          isClosable: true,
+          position: 'bottom-right'
+        });
+        
+        try {
+          initializeStacksProvider();
+        } catch (e) {
+          toast({
+            title: 'Recovery Failed',
+            description: 'Could not recover Stacks provider',
+            status: 'error',
+            duration: null,
+            isClosable: true,
+            position: 'bottom-right'
+          });
+        }
+      }
+    };
+
+    window.addEventListener('error', handleError);
+    return () => window.removeEventListener('error', handleError);
   }, []);
 
   if (!mounted) {
@@ -170,11 +259,20 @@ function MyApp({ Component, pageProps }: AppProps): ReactNode {
                 window.location.reload();
               },
               onCancel: () => {
-                console.log('Authentication canceled');
+                toast({
+                  title: 'Authentication Cancelled',
+                  description: 'Wallet connection was cancelled',
+                  status: 'info',
+                  duration: 5000,
+                  isClosable: true,
+                  position: 'bottom-right'
+                });
               },
             }}
           >
-            <Component {...pageProps} />
+            <PageTransition>
+              <Component {...pageProps} />
+            </PageTransition>
           </Connect>
         ) : (
           <div style={{ visibility: 'hidden' }}>Loading...</div>

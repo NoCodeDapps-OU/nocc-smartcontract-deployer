@@ -6,6 +6,10 @@ import {
   standardPrincipalCV,
   ClarityValue
 } from '@stacks/transactions';
+import _debounce from 'lodash/debounce';
+import { createStandaloneToast } from '@chakra-ui/react';
+
+const { toast } = createStandaloneToast();
 
 export const appConfig = new AppConfig(['store_write', 'publish_data']);
 
@@ -24,7 +28,14 @@ export const NOCC_TOKEN_CONTRACT = {
   assetName: 'NOCC'
 };
 
+// Add this helper function at the top
+const isOffline = () => typeof window !== 'undefined' && !window.navigator.onLine;
+
 export async function getNOCCBalance(address: string): Promise<string> {
+    if (isOffline()) {
+      return 'OFFLINE';
+    }
+
     try {
       const result = await fetchCallReadOnlyFunction({
         contractAddress: NOCC_TOKEN_CONTRACT.address,
@@ -41,38 +52,55 @@ export async function getNOCCBalance(address: string): Promise<string> {
       }
       return '0';
     } catch (error) {
-      console.error('Error fetching NOCC balance:', error);
-      return '0';
-    }
-  }
-
-  export function formatNOCCAmount(balanceStr: string): string {
-    try {
-      // Extract the number from the clarity response
-      const match = balanceStr.match(/\(ok u(\d+)\)/);
-      if (!match) return '0';
-      
-      // Get the raw balance in micro-NOCC
-      const microBalance = parseInt(match[1], 10);
-      
-      // Convert to NOCC (divide by 1,000 since NOCC has 3 decimals)
-      const noccBalance = microBalance / 1_000;
-      
-      // Format with k/M/B suffixes based on NOCC amount
-      if (noccBalance >= 1_000_000_000) {
-        return `${(noccBalance / 1_000_000_000).toFixed(1)}B`;
-      } else if (noccBalance >= 1_000_000) {
-        return `${(noccBalance / 1_000_000).toFixed(1)}M`;
-      } else if (noccBalance >= 1_000) {
-        return `${(noccBalance / 1_000).toFixed(1)}k`;
-      } else {
-        return noccBalance.toFixed(1);
+      if (isOffline()) {
+        return 'OFFLINE';
       }
-    } catch (error) {
-      console.error('Error formatting NOCC balance:', error);
+      toast({
+        title: 'Balance Error',
+        description: 'Unable to fetch NOCC balance',
+        status: 'error',
+        duration: 5000,
+        isClosable: true,
+        position: 'bottom-right'
+      });
       return '0';
     }
+}
+
+export function formatNOCCAmount(balanceStr: string): string {
+  try {
+    // Extract the number from the clarity response
+    const match = balanceStr.match(/\(ok u(\d+)\)/);
+    if (!match) return '0';
+    
+    // Get the raw balance in micro-NOCC
+    const microBalance = parseInt(match[1], 10);
+    
+    // Convert to NOCC (divide by 1,000 since NOCC has 3 decimals)
+    const noccBalance = microBalance / 1_000;
+    
+    // Format with k/M/B suffixes based on NOCC amount
+    if (noccBalance >= 1_000_000_000) {
+      return `${(noccBalance / 1_000_000_000).toFixed(1)}B`;
+    } else if (noccBalance >= 1_000_000) {
+      return `${(noccBalance / 1_000_000).toFixed(1)}M`;
+    } else if (noccBalance >= 1_000) {
+      return `${(noccBalance / 1_000).toFixed(1)}k`;
+    } else {
+      return noccBalance.toFixed(1);
+    }
+  } catch (error) {
+    toast({
+      title: 'Format Error',
+      description: 'Error formatting NOCC balance',
+      status: 'warning',
+      duration: 3000,
+      isClosable: true,
+      position: 'bottom-right'
+    });
+    return '0';
   }
+}
 
 export const formatWithCommas = (num: number): string => {
   return num.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
@@ -110,53 +138,61 @@ export async function fetchAccountNonce(address: string): Promise<bigint> {
 
 // Add this function to get STX balance
 export async function getSTXBalance(address: string): Promise<string> {
-  try {
-    const maxRetries = 3;
-    let retryCount = 0;
-    let lastError;
-
-    while (retryCount < maxRetries) {
-      try {
-        const response = await fetch(
-          `https://api.mainnet.hiro.so/extended/v1/address/${address}/stx`,
-          {
-            headers: {
-              'Accept': 'application/json',
-            },
-            mode: 'cors',
-          }
-        );
-
-        if (response.status === 429) {
-          // Rate limited - wait and retry
-          const waitTime = Math.pow(2, retryCount) * 1000;
-          await new Promise(resolve => setTimeout(resolve, waitTime));
-          retryCount++;
-          continue;
-        }
-
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-
-        const data = await response.json();
-        return data.balance;
-      } catch (error) {
-        lastError = error;
-        retryCount++;
-        if (retryCount === maxRetries) break;
-        
-        // Wait before retrying
-        const waitTime = Math.pow(2, retryCount) * 1000;
-        await new Promise(resolve => setTimeout(resolve, waitTime));
-      }
+    if (isOffline()) {
+      return 'OFFLINE';
     }
 
-    throw lastError;
-  } catch (error) {
-    console.error('Error fetching STX balance:', error);
-    return '0';
-  }
+    try {
+      const maxRetries = 3;
+      let retryCount = 0;
+      let lastError;
+
+      while (retryCount < maxRetries) {
+        try {
+          const response = await fetch(
+            `https://api.mainnet.hiro.so/extended/v1/address/${address}/stx`,
+            {
+              headers: {
+                'Accept': 'application/json',
+              },
+              mode: 'cors',
+            }
+          );
+
+          if (response.status === 429) {
+            const waitTime = Math.pow(2, retryCount) * 1000;
+            await new Promise(resolve => setTimeout(resolve, waitTime));
+            retryCount++;
+            continue;
+          }
+
+          if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+          }
+
+          const data = await response.json();
+          return data.balance;
+        } catch (error) {
+          if (isOffline()) {
+            return 'OFFLINE';
+          }
+          lastError = error;
+          retryCount++;
+          if (retryCount === maxRetries) break;
+          
+          const waitTime = Math.pow(2, retryCount) * 1000;
+          await new Promise(resolve => setTimeout(resolve, waitTime));
+        }
+      }
+
+      throw lastError;
+    } catch (error) {
+      if (isOffline()) {
+        return 'OFFLINE';
+      }
+      console.warn('Error fetching STX balance:', error);
+      return '0';
+    }
 }
 
 // Add this function to format STX amount
@@ -184,9 +220,13 @@ export function formatSTXAmount(balanceStr: string): string {
   }
 }
 
+// Update the hasEnoughNOCC function to handle undefined case
 export const hasEnoughNOCC = async (address: string, requiredAmount: number): Promise<boolean> => {
   try {
     const noccBalanceStr = await getNOCCBalance(address);
+    // Add null check for undefined case
+    if (!noccBalanceStr) return false;
+    
     const match = noccBalanceStr.match(/\(ok u(\d+)\)/);
     if (!match) return false;
     
@@ -194,7 +234,19 @@ export const hasEnoughNOCC = async (address: string, requiredAmount: number): Pr
     const noccBalance = microBalance / 1_000; // Convert to standard units (NOCC has 3 decimals)
     return noccBalance >= requiredAmount;
   } catch (error) {
-    console.error('Error checking NOCC balance:', error);
+    toast({
+      title: 'Balance Check Error',
+      description: 'Unable to verify NOCC balance',
+      status: 'error',
+      duration: 5000,
+      isClosable: true,
+      position: 'bottom-right'
+    });
     return false;
   }
 };
+
+// Update startBalancePolling to guarantee return type
+export const startBalancePolling = _debounce((callback: () => void): NodeJS.Timeout => {
+  return setInterval(callback, 10000) as NodeJS.Timeout; // Poll every 10 seconds
+}, 1000);

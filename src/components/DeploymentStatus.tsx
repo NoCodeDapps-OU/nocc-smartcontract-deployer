@@ -183,6 +183,11 @@ const TransactionCard: React.FC<TransactionCardProps> = ({
   progress,
   estimatedTime
 }) => {
+  // Don't render if no txId
+  if (!txId?.trim()) {
+    return null;
+  }
+
   const { hasCopied, onCopy } = useClipboard(txId);
 
   return (
@@ -271,7 +276,7 @@ const TransactionCard: React.FC<TransactionCardProps> = ({
   );
 };
 
-const DeploymentStatus: React.FC<DeploymentStatusProps> = ({
+export const DeploymentStatus: React.FC<DeploymentStatusProps> = ({
   contractId,
   swapTxId,
   deployTxId,
@@ -288,59 +293,85 @@ const DeploymentStatus: React.FC<DeploymentStatusProps> = ({
   useEffect(() => {
     let isMounted = true;
     let timeoutId: NodeJS.Timeout;
+    let retryCount = 0;
+    const MAX_RETRIES = 3;
+    const INITIAL_POLL_INTERVAL = 3000;
+    const SLOWER_POLL_INTERVAL = 8000;
 
     const checkStatus = async () => {
       if (!isMounted) return;
       
+      // Skip if either txId is missing or empty
+      if (!swapTxId?.trim() || !deployTxId?.trim()) {
+        return;
+      }
+
+      // If we've already confirmed both transactions, stop polling
+      if (swapConfirmed && deployConfirmed) {
+        return;
+      }
+      
       try {
-        // Check swap transaction
-        const swapResponse = await fetch(`/api/check-transaction?txId=${swapTxId}`);
-        const swapData = await swapResponse.json();
+        // Only fetch transactions that aren't confirmed yet
+        const promises = [];
+        if (!swapConfirmed && !swapFailed && !swapDropped) {
+          promises.push(fetch(`/api/check-transaction?txId=${swapTxId}`));
+        }
+        if (!deployConfirmed && !deployFailed && !deployDropped) {
+          promises.push(fetch(`/api/check-transaction?txId=${deployTxId}`));
+        }
+
+        if (promises.length === 0) return;
+
+        const responses = await Promise.all(promises);
         
-        if (swapData.tx_status === 'success') {
-          setSwapConfirmed(true);
-        } else if (swapData.tx_status === 'dropped') {
-          setSwapDropped(true);
-        } else if (swapData.tx_status?.startsWith('abort')) {
-          setSwapFailed(true);
+        // Reset retry count on successful response
+        retryCount = 0;
+
+        // Process responses
+        for (const response of responses) {
+          if (!response.ok) continue;
+          
+          const data = await response.json();
+          const txId = new URL(response.url).searchParams.get('txId');
+          
+          if (txId === swapTxId) {
+            setSwapConfirmed(data.tx_status === 'success');
+            setSwapDropped(data.tx_status === 'dropped');
+            setSwapFailed(data.tx_status?.startsWith('abort'));
+          } else if (txId === deployTxId) {
+            setDeployConfirmed(data.tx_status === 'success');
+            setDeployDropped(data.tx_status === 'dropped');
+            setDeployFailed(data.tx_status?.startsWith('abort'));
+          }
         }
 
-        // Check deploy transaction
-        const deployResponse = await fetch(`/api/check-transaction?txId=${deployTxId}`);
-        const deployData = await deployResponse.json();
-        
-        if (deployData.tx_status === 'success') {
-          setDeployConfirmed(true);
-        } else if (deployData.tx_status === 'dropped') {
-          setDeployDropped(true);
-        } else if (deployData.tx_status?.startsWith('abort')) {
-          setDeployFailed(true);
-        }
-
-        // If both transactions are dropped, remove from history
-        if (swapDropped && deployDropped && onRemove) {
-          onRemove();
-          return;
-        }
-
-        // Continue polling if neither transaction is confirmed/failed/dropped
-        if (!swapConfirmed && !swapFailed && !swapDropped || 
-            !deployConfirmed && !deployFailed && !deployDropped) {
-          timeoutId = setTimeout(checkStatus, 10000);
-        }
       } catch (error) {
         console.warn('Error checking status:', error);
-        timeoutId = setTimeout(checkStatus, 10000);
+        retryCount++;
+        
+        // If we've failed too many times, slow down polling
+        if (retryCount >= MAX_RETRIES) {
+          timeoutId = setTimeout(checkStatus, SLOWER_POLL_INTERVAL);
+          return;
+        }
+      }
+
+      // Continue polling if needed
+      if (isMounted && (!swapConfirmed && !swapFailed && !swapDropped || 
+          !deployConfirmed && !deployFailed && !deployDropped)) {
+        timeoutId = setTimeout(checkStatus, INITIAL_POLL_INTERVAL);
       }
     };
 
+    // Initial check
     checkStatus();
 
     return () => {
       isMounted = false;
       if (timeoutId) clearTimeout(timeoutId);
     };
-  }, [swapTxId, deployTxId, onRemove]);
+  }, [swapTxId, deployTxId, swapConfirmed, deployConfirmed, swapFailed, deployFailed, swapDropped, deployDropped]);
 
   // If both transactions are dropped, don't render anything
   if (swapDropped && deployDropped) {

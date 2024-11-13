@@ -6,6 +6,7 @@ import ContractInput from '../components/ContractInput';
 import DeployButton from '../components/DeployButton';
 import DeploymentStatus from '../components/DeploymentStatus';
 import { getUserSession } from '../utils/stacks';
+import Footer from '../components/Footer';
 
 interface DeploymentInfo {
   contractId: string;
@@ -20,6 +21,7 @@ interface DeploymentHistory {
 
 export default function Deployer() {
   const router = useRouter();
+  const [isLoading, setIsLoading] = useState(true);
   const [contractData, setContractData] = useState({
     name: '',
     code: ''
@@ -30,9 +32,13 @@ export default function Deployer() {
   useEffect(() => {
     const userSession = getUserSession();
     if (!userSession?.isUserSignedIn()) {
-      router.push('/');
+      document.body.style.transition = 'opacity 0.3s ease-in-out';
+      document.body.style.opacity = '0.95';
+      
+      router.replace('/');
       return;
     }
+    setIsLoading(false);
 
     // Get address of connected wallet
     const address = userSession.loadUserData().profile.stxAddress.mainnet;
@@ -44,6 +50,10 @@ export default function Deployer() {
       setDeploymentHistory(JSON.parse(savedHistory));
     }
   }, [router]);
+
+  if (isLoading) {
+    return null; // or a loading spinner if needed
+  }
 
   const handleDeploymentStart = (info: DeploymentInfo) => {
     setDeploymentInfo(info);
@@ -60,9 +70,9 @@ export default function Deployer() {
   };
 
   return (
-    <Box minH="100vh" bg="nocc.background">
+    <Box minH="100vh" bg="nocc.background" display="flex" flexDirection="column">
       <Header />
-      <Container maxW="container.xl" pt="80px" pb={10}>
+      <Container maxW="container.xl" pt="80px" pb={10} flex="1">
         <VStack spacing={8} align="stretch">
           {/* Contract Editor Card */}
           <Box 
@@ -166,6 +176,7 @@ export default function Deployer() {
           )}
         </VStack>
       </Container>
+      <Footer />
     </Box>
   );
 }
