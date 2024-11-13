@@ -74,7 +74,7 @@ const Header = () => {
         clearInterval(intervalId);
       }
     };
-  }, []);
+  }, [toast]);
 
   useEffect(() => {
     const handleOnline = () => setIsOffline(false);

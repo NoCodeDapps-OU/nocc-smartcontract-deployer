@@ -183,12 +183,11 @@ const TransactionCard: React.FC<TransactionCardProps> = ({
   progress,
   estimatedTime
 }) => {
-  // Don't render if no txId
+  const { hasCopied, onCopy } = useClipboard(txId || '');
+
   if (!txId?.trim()) {
     return null;
   }
-
-  const { hasCopied, onCopy } = useClipboard(txId);
 
   return (
     <Box

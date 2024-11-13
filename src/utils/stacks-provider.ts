@@ -2,6 +2,14 @@ import { createStandaloneToast } from '@chakra-ui/react';
 
 const { toast } = createStandaloneToast();
 
+interface WindowWithStacks extends Window {
+  StacksProvider: any;
+  LeatherProvider?: any;
+  XverseProviders?: {
+    StacksProvider: any;
+  };
+}
+
 export const ensureStacksProvider = () => {
   if (typeof window === 'undefined') return;
 

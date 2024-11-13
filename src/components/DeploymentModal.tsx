@@ -4,7 +4,6 @@ import {
   ModalContent,
   ModalHeader,
   ModalBody,
-  ModalFooter,
   Button,
   Text,
   VStack,
@@ -13,8 +12,7 @@ import {
   Input,
   Alert,
   AlertIcon,
-  Spinner,
-  Tooltip
+  Spinner
 } from '@chakra-ui/react';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { VelarSDK, SwapType, SwapResponse, ISwapService } from '@velarprotocol/velar-sdk';

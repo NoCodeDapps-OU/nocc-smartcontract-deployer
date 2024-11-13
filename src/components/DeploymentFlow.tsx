@@ -344,7 +344,7 @@ const TransactionFlow = ({ txId, type }: TransactionFlowProps) => {
       isMounted = false;
       if (timeoutId) clearTimeout(timeoutId);
     };
-  }, [txId]);
+  }, [txStatus, txId]);
 
   const getStageInfo = (stage: string, index: number) => {
     // If transaction failed, mark all subsequent stages as failed

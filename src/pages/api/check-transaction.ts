@@ -141,6 +141,7 @@ export default async function handler(
 }
 
 // Clean up cache periodically
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const cleanup = setInterval(() => {
   const now = Date.now();
   for (const [key, value] of cache.entries()) {
