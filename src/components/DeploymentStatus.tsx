@@ -12,7 +12,7 @@ import {
   useClipboard
 } from '@chakra-ui/react';
 import { motion } from 'framer-motion';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { ExternalLinkIcon, CheckIcon, Clock, AlertTriangle } from 'lucide-react';
 import TransactionFlow from './DeploymentFlow';
 import { TimeDisplay } from './DeploymentFlow';
@@ -60,6 +60,18 @@ interface CompletedTransaction {
 
 // Create a completion cache
 const completedTransactions = new Map<string, CompletedTransaction>();
+
+// Add this cache for transaction states
+const transactionStateCache = new Map<string, TransactionState>();
+
+// Update the getCachedTransactionState function
+const getCachedTransactionState = (txId: string): TransactionState | null => {
+  const cached = transactionStateCache.get(txId);
+  if (cached && Date.now() - cached.lastChecked < 15000) {
+    return cached;
+  }
+  return null;
+};
 
 const StatusIndicator: React.FC<StatusIndicatorProps> = ({ isConfirmed, isFailed, timestamp, estimatedTime }) => {
   const [elapsed, setElapsed] = useState<number>(0);
@@ -295,27 +307,6 @@ const TransactionCard: React.FC<TransactionCardProps> = ({
   );
 };
 
-// Update the transaction state cache to be more persistent
-const transactionStateCache = new Map<string, TransactionState>();
-
-// Add a new function to get cached transaction state
-const getCachedTransactionState = (txId: string): TransactionState | null => {
-  const state = transactionStateCache.get(txId);
-  if (!state) return null;
-
-  // Return cached state if it's a final state
-  if (['success', 'failed', 'dropped'].includes(state.status)) {
-    return state;
-  }
-
-  // For pending states, check if cache is still valid (15 seconds)
-  if (Date.now() - state.lastChecked < 15000) {
-    return state;
-  }
-
-  return null;
-};
-
 export const DeploymentStatus: React.FC<DeploymentStatusProps> = ({
   contractId,
   swapTxId,
@@ -323,6 +314,7 @@ export const DeploymentStatus: React.FC<DeploymentStatusProps> = ({
   timestamp,
   onRemove
 }) => {
+  const [isInitialized, setIsInitialized] = useState(false);
   const [swapConfirmed, setSwapConfirmed] = useState<boolean>(false);
   const [swapFailed, setSwapFailed] = useState<boolean>(false);
   const [swapDropped, setSwapDropped] = useState<boolean>(false);
@@ -331,58 +323,89 @@ export const DeploymentStatus: React.FC<DeploymentStatusProps> = ({
   const [deployDropped, setDeployDropped] = useState<boolean>(false);
   const [burnBlockHeight, setBurnBlockHeight] = useState<number | undefined>();
 
+  const checkTransaction = useCallback(async (txId: string): Promise<TransactionState | null> => {
+    // Check completed transactions cache first
+    const completed = completedTransactions.get(txId);
+    if (completed) {
+      return {
+        status: completed.status,
+        lastChecked: completed.timestamp,
+        burnBlockHeight: undefined
+      };
+    }
+
+    // Check state cache for pending transactions
+    const cachedState = getCachedTransactionState(txId);
+    if (cachedState) {
+      return cachedState;
+    }
+
+    try {
+      const response = await fetch(`/api/check-transaction?txId=${txId}`);
+      if (!response.ok) return null;
+
+      const data = await response.json();
+      const newState: TransactionState = {
+        status: data.tx_status === 'success' ? 'success' :
+               data.tx_status?.startsWith('abort') ? 'failed' :
+               data.tx_status === 'dropped' ? 'dropped' : 'pending',
+        burnBlockHeight: data.burn_block_height,
+        lastChecked: Date.now()
+      };
+
+      // Update caches based on status
+      if (newState.status !== 'pending') {
+        completedTransactions.set(txId, {
+          status: newState.status as 'success' | 'failed' | 'dropped',
+          timestamp: Date.now(),
+          elapsedTime: Math.floor((Date.now() - timestamp) / 1000)
+        });
+      } else {
+        transactionStateCache.set(txId, newState);
+      }
+
+      return newState;
+    } catch (error) {
+      console.warn('Error checking transaction:', error);
+      return null;
+    }
+  }, [timestamp]);
+
+  const checkInitialStatuses = useCallback(async () => {
+    const results = await Promise.all([
+      swapTxId && checkTransaction(swapTxId),
+      deployTxId && checkTransaction(deployTxId)
+    ]);
+
+    const [swapState, deployState] = results;
+
+    if (swapState) {
+      setSwapConfirmed(swapState.status === 'success');
+      setSwapFailed(swapState.status === 'failed');
+      setSwapDropped(swapState.status === 'dropped');
+    }
+
+    if (deployState) {
+      setDeployConfirmed(deployState.status === 'success');
+      setDeployFailed(deployState.status === 'failed');
+      setDeployDropped(deployState.status === 'dropped');
+      if (deployState.burnBlockHeight) {
+        setBurnBlockHeight(deployState.burnBlockHeight);
+      }
+    }
+
+    setIsInitialized(true);
+  }, [swapTxId, deployTxId]);
+
   useEffect(() => {
     let isMounted = true;
     let timeoutId: NodeJS.Timeout;
 
-    const checkTransaction = async (txId: string): Promise<TransactionState | null> => {
-      // Check if transaction is already completed
-      const completed = completedTransactions.get(txId);
-      if (completed) {
-        return {
-          status: completed.status,
-          lastChecked: completed.timestamp,
-          burnBlockHeight: undefined
-        };
-      }
-
-      // Check cache for pending transactions
-      const cachedState = getCachedTransactionState(txId);
-      if (cachedState) {
-        return cachedState;
-      }
-
-      try {
-        const response = await fetch(`/api/check-transaction?txId=${txId}`);
-        if (!response.ok) return null;
-
-        const data = await response.json();
-        const newState: TransactionState = {
-          status: data.tx_status === 'success' ? 'success' :
-                 data.tx_status?.startsWith('abort') ? 'failed' :
-                 data.tx_status === 'dropped' ? 'dropped' : 'pending',
-          burnBlockHeight: data.burn_block_height,
-          lastChecked: Date.now()
-        };
-
-        // If transaction is complete, add to completion cache
-        if (newState.status !== 'pending') {
-          completedTransactions.set(txId, {
-            status: newState.status as 'success' | 'failed' | 'dropped',
-            timestamp: Date.now(),
-            elapsedTime: Math.floor((Date.now() - timestamp) / 1000)
-          });
-        }
-
-        return newState;
-      } catch (error) {
-        console.warn('Error checking transaction:', error);
-        return null;
-      }
-    };
+    // Check initial statuses first
+    checkInitialStatuses();
 
     const updateTransactionStates = async () => {
-      if (!isMounted) return;
+      if (!isMounted || !isInitialized) return;
 
       // Don't check if both transactions are already completed
       const swapCompleted = completedTransactions.has(swapTxId);
@@ -415,7 +438,7 @@ export const DeploymentStatus: React.FC<DeploymentStatusProps> = ({
         }
       }
 
-      // Only continue polling if there are incomplete transactions
+      // Continue polling only if needed
       const needsMoreChecks = (!swapCompleted && swapTxId) || 
                             (!deployCompleted && deployTxId && (swapCompleted || !swapTxId));
 
@@ -424,8 +447,9 @@ export const DeploymentStatus: React.FC<DeploymentStatusProps> = ({
       }
     };
 
-    // Initial check
-    updateTransactionStates();
+    if (isInitialized) {
+      updateTransactionStates();
+    }
 
     return () => {
       isMounted = false;
@@ -433,10 +457,15 @@ export const DeploymentStatus: React.FC<DeploymentStatusProps> = ({
         clearTimeout(timeoutId);
       }
     };
-  }, [swapTxId, deployTxId, timestamp]);
+  }, [isInitialized, swapTxId, deployTxId, timestamp, checkTransaction]);
 
   // If both transactions are dropped, don't render anything
   if (swapDropped && deployDropped) {
+    return null;
+  }
+
+  // Don't render until initialized
+  if (!isInitialized) {
     return null;
   }
 

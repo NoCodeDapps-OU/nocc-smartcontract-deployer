@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Box, HStack, VStack, Text, Flex, Link, Alert, AlertIcon, AlertDescription } from '@chakra-ui/react';
 import { ArrowRight, CheckCircle, Clock, ExternalLink, AlertTriangle } from 'lucide-react';
 import { cvToString, deserializeCV, ClarityValue } from '@stacks/transactions';
@@ -63,6 +63,14 @@ interface TransactionFlowProps {
   type: 'swap' | 'deploy';
 }
 
+// Add this at the top of the file
+interface TransactionStatus {
+  isConfirmed: boolean;
+  isFailed: boolean;
+  isDropped: boolean;
+  burnBlockHeight?: number;
+}
+
 const TransactionFlow = ({ txId, type }: TransactionFlowProps) => {
   const [txStatus, setTxStatus] = useState<{
     currentStage: number;
@@ -72,12 +80,14 @@ const TransactionFlow = ({ txId, type }: TransactionFlowProps) => {
     burnBlockHeight?: number;
     errorReason?: string;
     failedStage?: number;
+    isInitialized: boolean;
   }>({
     currentStage: 0,
     isConfirmed: false,
     isFailed: false,
     startTime: Date.now(),
-    failedStage: undefined
+    failedStage: undefined,
+    isInitialized: false
   });
 
   const formatClarityError = (errorString: string): string => {
@@ -298,84 +308,82 @@ const TransactionFlow = ({ txId, type }: TransactionFlowProps) => {
     return 'Transaction failed';
   };
 
+  // Add this function to check initial status
+  const checkInitialStatus = useCallback(async () => {
+    if (!txId?.trim()) return;
+    
+    try {
+      const response = await fetch(`/api/check-transaction?txId=${txId}`);
+      if (!response.ok) return;
+
+      const data = await response.json();
+      
+      const isConfirmed = data.tx_status === 'success';
+      const isFailed = data.tx_status?.startsWith('abort') || data.tx_status === 'dropped';
+      
+      setTxStatus(prev => ({
+        ...prev,
+        isConfirmed,
+        isFailed,
+        burnBlockHeight: data.burn_block_height,
+        currentStage: calculateStage(data.tx_status),
+        isInitialized: true
+      }));
+
+    } catch (error) {
+      console.warn('Error checking initial tx status:', error);
+    }
+  }, [txId]);
+
+  // Modify the useEffect to wait for initial status
   useEffect(() => {
     let isMounted = true;
     let timeoutId: NodeJS.Timeout;
 
+    // Check initial status first
+    checkInitialStatus();
+
     const checkStatus = async () => {
-      if (!isMounted || !txId?.trim()) return;
+      if (!isMounted || !txId?.trim() || !txStatus.isInitialized) return;
 
-      // Check if transaction is completed
-      const completedTx = completedTxCache.get(txId);
-      if (completedTx) {
-        setTxStatus(prev => ({
-          ...prev,
-          isConfirmed: completedTx.status === 'success',
-          isFailed: completedTx.status === 'failed' || completedTx.status === 'dropped',
-          burnBlockHeight: completedTx.burnBlockHeight
-        }));
-        return;
-      }
+      // Only continue polling if transaction is not completed
+      if (!txStatus.isConfirmed && !txStatus.isFailed) {
+        try {
+          const response = await fetch(`/api/check-transaction?txId=${txId}`);
+          if (!response.ok) return;
 
-      // Check pending cache
-      const pendingTx = pendingTxCache.get(txId);
-      if (pendingTx && Date.now() - pendingTx.lastChecked < CHECK_INTERVAL) {
-        return;
-      }
-
-      try {
-        const response = await fetch(`/api/check-transaction?txId=${txId}`);
-        if (!response.ok) return;
-
-        const data = await response.json();
-        
-        // Update status
-        const newStatus = {
-          ...txStatus,
-          isConfirmed: data.tx_status === 'success',
-          isFailed: data.tx_status?.startsWith('abort') || data.tx_status === 'dropped',
-          burnBlockHeight: data.burn_block_height,
-          currentStage: calculateStage(data.tx_status),
-        };
-
-        if (isMounted) {
-          setTxStatus(newStatus);
-
-          // Cache completed transactions
-          if (newStatus.isConfirmed || newStatus.isFailed) {
-            completedTxCache.set(txId, {
-              status: data.tx_status,
-              elapsedTime: Date.now() - txStatus.startTime,
-              burnBlockHeight: data.burn_block_height
-            });
-          } else {
-            // Update pending cache
-            pendingTxCache.set(txId, {
-              lastChecked: Date.now(),
-              status: data.tx_status
-            });
+          const data = await response.json();
+          
+          if (isMounted) {
+            setTxStatus(prev => ({
+              ...prev,
+              isConfirmed: data.tx_status === 'success',
+              isFailed: data.tx_status?.startsWith('abort') || data.tx_status === 'dropped',
+              burnBlockHeight: data.burn_block_height,
+              currentStage: calculateStage(data.tx_status)
+            }));
           }
+        } catch (error) {
+          console.warn('Error checking tx status:', error);
         }
 
-        // Only continue polling if transaction is still pending
-        if (!newStatus.isConfirmed && !newStatus.isFailed && isMounted) {
-          timeoutId = setTimeout(checkStatus, CHECK_INTERVAL);
-        }
-      } catch (error) {
-        console.warn('Error checking tx status:', error);
         if (isMounted) {
-          timeoutId = setTimeout(checkStatus, CHECK_INTERVAL);
+          timeoutId = setTimeout(checkStatus, 15000);
         }
       }
     };
 
-    checkStatus();
+    if (txStatus.isInitialized) {
+      checkStatus();
+    }
 
     return () => {
       isMounted = false;
-      if (timeoutId) clearTimeout(timeoutId);
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
     };
-  }, [txId]);
+  }, [txId, txStatus.isInitialized, txStatus.isConfirmed, txStatus.isFailed]);
 
   const getStageInfo = (stage: string, index: number) => {
     // If transaction failed, mark all subsequent stages as failed
