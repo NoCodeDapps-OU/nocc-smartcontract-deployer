@@ -77,19 +77,25 @@ const StatusIndicator: React.FC<StatusIndicatorProps> = ({ isConfirmed, isFailed
   const [elapsed, setElapsed] = useState<number>(0);
 
   useEffect(() => {
-    // For completed transactions, use cached elapsed time
+    let intervalId: NodeJS.Timeout | null = null;
+
+    // For completed transactions, just set final elapsed time once
     if (isConfirmed || isFailed) {
       const finalElapsed = Math.floor((Date.now() - timestamp) / 1000);
       setElapsed(finalElapsed);
-      return; // Don't set up interval for completed transactions
+    } else {
+      // Only set up interval for pending transactions
+      intervalId = setInterval(() => {
+        setElapsed(Math.floor((Date.now() - timestamp) / 1000));
+      }, 1000);
     }
 
-    // Only set up interval for pending transactions
-    const timer = setInterval(() => {
-      setElapsed(Math.floor((Date.now() - timestamp) / 1000));
-    }, 1000);
-
-    return () => clearInterval(timer);
+    // Cleanup function
+    return () => {
+      if (intervalId) {
+        clearInterval(intervalId);
+      }
+    };
   }, [timestamp, isConfirmed, isFailed]);
 
   const remainingTime = estimatedTime ? Math.max(0, estimatedTime - elapsed) : 0;
@@ -157,6 +163,7 @@ const StatusIndicator: React.FC<StatusIndicatorProps> = ({ isConfirmed, isFailed
     );
   }
 
+  // Only show timer for pending transactions
   return (
     <HStack spacing={3} align="center">
       <motion.div
@@ -216,6 +223,69 @@ const TransactionCard: React.FC<TransactionCardProps> = ({
   estimatedTime
 }) => {
   const { hasCopied, onCopy } = useClipboard(txId || '');
+  const [localIsConfirmed, setLocalIsConfirmed] = useState(isConfirmed);
+  const [localIsFailed, setLocalIsFailed] = useState(isFailed);
+
+  // Add effect to check transaction status
+  useEffect(() => {
+    let isMounted = true;
+    let timeoutId: NodeJS.Timeout;
+
+    const checkStatus = async () => {
+      if (!txId?.trim()) return;
+
+      try {
+        const response = await fetch(`/api/check-transaction?txId=${txId}`);
+        if (!response.ok) return;
+
+        const data = await response.json();
+        
+        if (isMounted) {
+          const newIsConfirmed = data.tx_status === 'success';
+          const newIsFailed = data.tx_status?.startsWith('abort') || data.tx_status === 'dropped';
+          
+          setLocalIsConfirmed(newIsConfirmed);
+          setLocalIsFailed(newIsFailed);
+
+          // Update completion cache
+          if (newIsConfirmed || newIsFailed) {
+            completedTransactions.set(txId, {
+              status: newIsConfirmed ? 'success' : 'failed',
+              timestamp: Date.now(),
+              elapsedTime: Math.floor((Date.now() - timestamp) / 1000)
+            });
+          }
+          
+          // Continue polling if not completed
+          if (!newIsConfirmed && !newIsFailed) {
+            timeoutId = setTimeout(checkStatus, 15000);
+          }
+        }
+      } catch (error) {
+        console.warn('Error checking tx status:', error);
+        if (isMounted && !localIsConfirmed && !localIsFailed) {
+          timeoutId = setTimeout(checkStatus, 15000);
+        }
+      }
+    };
+
+    // Check cached status first
+    const cached = completedTransactions.get(txId);
+    if (cached) {
+      setLocalIsConfirmed(cached.status === 'success');
+      setLocalIsFailed(cached.status === 'failed' || cached.status === 'dropped');
+    } else {
+      // If not cached, start checking
+      checkStatus();
+    }
+
+    return () => {
+      isMounted = false;
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+    };
+  }, [txId, timestamp]);
 
   if (!txId?.trim()) {
     return null;
@@ -228,15 +298,15 @@ const TransactionCard: React.FC<TransactionCardProps> = ({
       p={6}
       border="1px solid"
       borderColor={
-        isFailed ? "red.500/20" :
-        isConfirmed ? "green.500/20" : 
+        localIsFailed ? "red.500/20" :
+        localIsConfirmed ? "green.500/20" : 
         "orange.500/20"
       }
       transition="all 0.3s"
       _hover={{
         transform: "translateY(-2px)",
-        borderColor: isFailed ? "red.500/40" :
-                   isConfirmed ? "green.500/40" : 
+        borderColor: localIsFailed ? "red.500/40" :
+                   localIsConfirmed ? "green.500/40" : 
                    "orange.500/40"
       }}
       role="group"
@@ -245,8 +315,8 @@ const TransactionCard: React.FC<TransactionCardProps> = ({
         <Flex justify="space-between" align="center">
           <HStack spacing={4}>
             <StatusIndicator 
-              isConfirmed={isConfirmed}
-              isFailed={isFailed}
+              isConfirmed={localIsConfirmed}
+              isFailed={localIsFailed}
               timestamp={timestamp}
               estimatedTime={estimatedTime}
             />
@@ -269,7 +339,7 @@ const TransactionCard: React.FC<TransactionCardProps> = ({
             >
               {hasCopied ? 'Copied!' : `${txId.slice(0, 6)}...${txId.slice(-4)}`}
             </Code>
-            {isConfirmed && (
+            {localIsConfirmed && (
               <Badge
                 colorScheme="green"
                 variant="solid"
@@ -395,7 +465,7 @@ export const DeploymentStatus: React.FC<DeploymentStatusProps> = ({
     }
 
     setIsInitialized(true);
-  }, [swapTxId, deployTxId]);
+  }, [swapTxId, deployTxId, checkTransaction]);
 
   useEffect(() => {
     let isMounted = true;
@@ -469,6 +539,8 @@ export const DeploymentStatus: React.FC<DeploymentStatusProps> = ({
     return null;
   }
 
+  const allConfirmed = swapConfirmed && deployConfirmed;
+
   return (
     <Container maxW="container.lg" p={0}>
       <Box 
@@ -489,7 +561,7 @@ export const DeploymentStatus: React.FC<DeploymentStatusProps> = ({
             >
               Deployment Progress
             </Text>
-            {swapConfirmed && deployConfirmed && (
+            {allConfirmed && (
               <Badge
                 colorScheme="green"
                 variant="subtle"
