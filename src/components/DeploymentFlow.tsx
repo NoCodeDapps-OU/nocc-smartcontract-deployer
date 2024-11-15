@@ -3,6 +3,19 @@ import { Box, HStack, VStack, Text, Flex, Link, Alert, AlertIcon, AlertDescripti
 import { ArrowRight, CheckCircle, Clock, ExternalLink, AlertTriangle } from 'lucide-react';
 import { cvToString, deserializeCV, ClarityValue } from '@stacks/transactions';
 
+// Add this to track completed transactions globally
+const completedTxCache = new Map<string, {
+  status: string;
+  elapsedTime: number;
+  burnBlockHeight?: number;
+}>();
+
+// Add this to track pending transactions
+const pendingTxCache = new Map<string, {
+  lastChecked: number;
+  status: string;
+}>();
+
 // Add TimeDisplay component in the same file
 export const TimeDisplay: React.FC<{ elapsed: number }> = ({ elapsed }) => {
   const hours = Math.floor(elapsed / 3600);
@@ -22,6 +35,7 @@ export const TimeDisplay: React.FC<{ elapsed: number }> = ({ elapsed }) => {
 
 // Add these constants at the top of the file
 const TX_STAGES = ['mempool', 'contract', 'mining', 'anchor'];
+const CHECK_INTERVAL = 15000; // 15 seconds between checks
 
 // Add the calculateStage function
 const calculateStage = (txStatus: string): number => {
@@ -287,54 +301,71 @@ const TransactionFlow = ({ txId, type }: TransactionFlowProps) => {
   useEffect(() => {
     let isMounted = true;
     let timeoutId: NodeJS.Timeout;
-    let retryCount = 0;
-    const MAX_RETRIES = 3;
-    const POLL_INTERVAL = 5000;
 
     const checkStatus = async () => {
       if (!isMounted || !txId?.trim()) return;
 
+      // Check if transaction is completed
+      const completedTx = completedTxCache.get(txId);
+      if (completedTx) {
+        setTxStatus(prev => ({
+          ...prev,
+          isConfirmed: completedTx.status === 'success',
+          isFailed: completedTx.status === 'failed' || completedTx.status === 'dropped',
+          burnBlockHeight: completedTx.burnBlockHeight
+        }));
+        return;
+      }
+
+      // Check pending cache
+      const pendingTx = pendingTxCache.get(txId);
+      if (pendingTx && Date.now() - pendingTx.lastChecked < CHECK_INTERVAL) {
+        return;
+      }
+
       try {
         const response = await fetch(`/api/check-transaction?txId=${txId}`);
-        
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
+        if (!response.ok) return;
 
         const data = await response.json();
         
-        if (isMounted) {
-          // Update status
-          const newStatus = {
-            ...txStatus,
-            isConfirmed: data.tx_status === 'success',
-            isFailed: data.tx_status?.startsWith('abort') || data.tx_status === 'dropped',
-            burnBlockHeight: data.burn_block_height,
-            currentStage: calculateStage(data.tx_status),
-          };
+        // Update status
+        const newStatus = {
+          ...txStatus,
+          isConfirmed: data.tx_status === 'success',
+          isFailed: data.tx_status?.startsWith('abort') || data.tx_status === 'dropped',
+          burnBlockHeight: data.burn_block_height,
+          currentStage: calculateStage(data.tx_status),
+        };
 
+        if (isMounted) {
           setTxStatus(newStatus);
 
-          // Stop polling if transaction is complete
+          // Cache completed transactions
           if (newStatus.isConfirmed || newStatus.isFailed) {
-            return;
+            completedTxCache.set(txId, {
+              status: data.tx_status,
+              elapsedTime: Date.now() - txStatus.startTime,
+              burnBlockHeight: data.burn_block_height
+            });
+          } else {
+            // Update pending cache
+            pendingTxCache.set(txId, {
+              lastChecked: Date.now(),
+              status: data.tx_status
+            });
           }
+        }
 
-          // Reset retry count on successful response
-          retryCount = 0;
+        // Only continue polling if transaction is still pending
+        if (!newStatus.isConfirmed && !newStatus.isFailed && isMounted) {
+          timeoutId = setTimeout(checkStatus, CHECK_INTERVAL);
         }
       } catch (error) {
         console.warn('Error checking tx status:', error);
-        retryCount++;
-        
-        if (retryCount >= MAX_RETRIES) {
-          return; // Stop polling after max retries
+        if (isMounted) {
+          timeoutId = setTimeout(checkStatus, CHECK_INTERVAL);
         }
-      }
-
-      // Continue polling if needed
-      if (isMounted && !txStatus.isConfirmed && !txStatus.isFailed) {
-        timeoutId = setTimeout(checkStatus, POLL_INTERVAL);
       }
     };
 
@@ -344,7 +375,7 @@ const TransactionFlow = ({ txId, type }: TransactionFlowProps) => {
       isMounted = false;
       if (timeoutId) clearTimeout(timeoutId);
     };
-  }, [txStatus, txId]);
+  }, [txId]);
 
   const getStageInfo = (stage: string, index: number) => {
     // If transaction failed, mark all subsequent stages as failed

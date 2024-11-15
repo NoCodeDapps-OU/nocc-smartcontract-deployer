@@ -42,18 +42,37 @@ interface DeploymentStatusProps {
   onRemove?: () => void;
 }
 
+interface TransactionState {
+  status: 'pending' | 'success' | 'failed' | 'dropped';
+  burnBlockHeight?: number;
+  lastChecked: number;
+}
+
 const SWAP_ESTIMATED_TIME = 600; // 10 minutes
 const DEPLOY_ESTIMATED_TIME = 600; // 10 minutes
+
+// Add this interface to track transaction completion status
+interface CompletedTransaction {
+  status: 'success' | 'failed' | 'dropped';
+  timestamp: number;
+  elapsedTime: number;
+}
+
+// Create a completion cache
+const completedTransactions = new Map<string, CompletedTransaction>();
 
 const StatusIndicator: React.FC<StatusIndicatorProps> = ({ isConfirmed, isFailed, timestamp, estimatedTime }) => {
   const [elapsed, setElapsed] = useState<number>(0);
 
   useEffect(() => {
+    // For completed transactions, use cached elapsed time
     if (isConfirmed || isFailed) {
-      setElapsed(Math.floor((Date.now() - timestamp) / 1000));
-      return;
+      const finalElapsed = Math.floor((Date.now() - timestamp) / 1000);
+      setElapsed(finalElapsed);
+      return; // Don't set up interval for completed transactions
     }
 
+    // Only set up interval for pending transactions
     const timer = setInterval(() => {
       setElapsed(Math.floor((Date.now() - timestamp) / 1000));
     }, 1000);
@@ -99,7 +118,8 @@ const StatusIndicator: React.FC<StatusIndicatorProps> = ({ isConfirmed, isFailed
       <HStack spacing={3} align="center">
         <motion.div
           initial={{ scale: 1 }}
-          animate={{ scale: 1 }}
+          animate={{ scale: 1.1 }}
+          transition={{ duration: 0.2 }}
         >
           <Box
             w="12px"
@@ -275,6 +295,27 @@ const TransactionCard: React.FC<TransactionCardProps> = ({
   );
 };
 
+// Update the transaction state cache to be more persistent
+const transactionStateCache = new Map<string, TransactionState>();
+
+// Add a new function to get cached transaction state
+const getCachedTransactionState = (txId: string): TransactionState | null => {
+  const state = transactionStateCache.get(txId);
+  if (!state) return null;
+
+  // Return cached state if it's a final state
+  if (['success', 'failed', 'dropped'].includes(state.status)) {
+    return state;
+  }
+
+  // For pending states, check if cache is still valid (15 seconds)
+  if (Date.now() - state.lastChecked < 15000) {
+    return state;
+  }
+
+  return null;
+};
+
 export const DeploymentStatus: React.FC<DeploymentStatusProps> = ({
   contractId,
   swapTxId,
@@ -288,89 +329,111 @@ export const DeploymentStatus: React.FC<DeploymentStatusProps> = ({
   const [deployConfirmed, setDeployConfirmed] = useState<boolean>(false);
   const [deployFailed, setDeployFailed] = useState<boolean>(false);
   const [deployDropped, setDeployDropped] = useState<boolean>(false);
+  const [burnBlockHeight, setBurnBlockHeight] = useState<number | undefined>();
 
   useEffect(() => {
     let isMounted = true;
     let timeoutId: NodeJS.Timeout;
-    let retryCount = 0;
-    const MAX_RETRIES = 3;
-    const INITIAL_POLL_INTERVAL = 3000;
-    const SLOWER_POLL_INTERVAL = 8000;
 
-    const checkStatus = async () => {
-      if (!isMounted) return;
-      
-      // Skip if either txId is missing or empty
-      if (!swapTxId?.trim() || !deployTxId?.trim()) {
-        return;
+    const checkTransaction = async (txId: string): Promise<TransactionState | null> => {
+      // Check if transaction is already completed
+      const completed = completedTransactions.get(txId);
+      if (completed) {
+        return {
+          status: completed.status,
+          lastChecked: completed.timestamp,
+          burnBlockHeight: undefined
+        };
       }
 
-      // If we've already confirmed both transactions, stop polling
-      if (swapConfirmed && deployConfirmed) {
-        return;
+      // Check cache for pending transactions
+      const cachedState = getCachedTransactionState(txId);
+      if (cachedState) {
+        return cachedState;
       }
-      
+
       try {
-        // Only fetch transactions that aren't confirmed yet
-        const promises = [];
-        if (!swapConfirmed && !swapFailed && !swapDropped) {
-          promises.push(fetch(`/api/check-transaction?txId=${swapTxId}`));
+        const response = await fetch(`/api/check-transaction?txId=${txId}`);
+        if (!response.ok) return null;
+
+        const data = await response.json();
+        const newState: TransactionState = {
+          status: data.tx_status === 'success' ? 'success' :
+                 data.tx_status?.startsWith('abort') ? 'failed' :
+                 data.tx_status === 'dropped' ? 'dropped' : 'pending',
+          burnBlockHeight: data.burn_block_height,
+          lastChecked: Date.now()
+        };
+
+        // If transaction is complete, add to completion cache
+        if (newState.status !== 'pending') {
+          completedTransactions.set(txId, {
+            status: newState.status as 'success' | 'failed' | 'dropped',
+            timestamp: Date.now(),
+            elapsedTime: Math.floor((Date.now() - timestamp) / 1000)
+          });
         }
-        if (!deployConfirmed && !deployFailed && !deployDropped) {
-          promises.push(fetch(`/api/check-transaction?txId=${deployTxId}`));
+
+        return newState;
+      } catch (error) {
+        console.warn('Error checking transaction:', error);
+        return null;
+      }
+    };
+
+    const updateTransactionStates = async () => {
+      if (!isMounted) return;
+
+      // Don't check if both transactions are already completed
+      const swapCompleted = completedTransactions.has(swapTxId);
+      const deployCompleted = completedTransactions.has(deployTxId);
+      
+      if (swapCompleted && deployCompleted) {
+        return;
+      }
+
+      // Check swap transaction if needed
+      if (swapTxId && !swapCompleted) {
+        const swapState = await checkTransaction(swapTxId);
+        if (swapState && isMounted) {
+          setSwapConfirmed(swapState.status === 'success');
+          setSwapFailed(swapState.status === 'failed');
+          setSwapDropped(swapState.status === 'dropped');
         }
+      }
 
-        if (promises.length === 0) return;
-
-        const responses = await Promise.all(promises);
-        
-        // Reset retry count on successful response
-        retryCount = 0;
-
-        // Process responses
-        for (const response of responses) {
-          if (!response.ok) continue;
-          
-          const data = await response.json();
-          const txId = new URL(response.url).searchParams.get('txId');
-          
-          if (txId === swapTxId) {
-            setSwapConfirmed(data.tx_status === 'success');
-            setSwapDropped(data.tx_status === 'dropped');
-            setSwapFailed(data.tx_status?.startsWith('abort'));
-          } else if (txId === deployTxId) {
-            setDeployConfirmed(data.tx_status === 'success');
-            setDeployDropped(data.tx_status === 'dropped');
-            setDeployFailed(data.tx_status?.startsWith('abort'));
+      // Only check deploy if swap is complete or no swap
+      if (deployTxId && !deployCompleted && (swapCompleted || !swapTxId)) {
+        const deployState = await checkTransaction(deployTxId);
+        if (deployState && isMounted) {
+          setDeployConfirmed(deployState.status === 'success');
+          setDeployFailed(deployState.status === 'failed');
+          setDeployDropped(deployState.status === 'dropped');
+          if (deployState.burnBlockHeight) {
+            setBurnBlockHeight(deployState.burnBlockHeight);
           }
         }
-
-      } catch (error) {
-        console.warn('Error checking status:', error);
-        retryCount++;
-        
-        // If we've failed too many times, slow down polling
-        if (retryCount >= MAX_RETRIES) {
-          timeoutId = setTimeout(checkStatus, SLOWER_POLL_INTERVAL);
-          return;
-        }
       }
 
-      // Continue polling if needed
-      if (isMounted && (!swapConfirmed && !swapFailed && !swapDropped || 
-          !deployConfirmed && !deployFailed && !deployDropped)) {
-        timeoutId = setTimeout(checkStatus, INITIAL_POLL_INTERVAL);
+      // Only continue polling if there are incomplete transactions
+      const needsMoreChecks = (!swapCompleted && swapTxId) || 
+                            (!deployCompleted && deployTxId && (swapCompleted || !swapTxId));
+
+      if (needsMoreChecks && isMounted) {
+        timeoutId = setTimeout(updateTransactionStates, 15000);
       }
     };
 
     // Initial check
-    checkStatus();
+    updateTransactionStates();
 
     return () => {
       isMounted = false;
-      if (timeoutId) clearTimeout(timeoutId);
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
     };
-  }, [swapTxId, deployTxId, swapConfirmed, deployConfirmed, swapFailed, deployFailed, swapDropped, deployDropped]);
+  }, [swapTxId, deployTxId, timestamp]);
 
   // If both transactions are dropped, don't render anything
   if (swapDropped && deployDropped) {

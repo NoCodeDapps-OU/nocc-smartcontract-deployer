@@ -17,20 +17,34 @@ const Header = () => {
     let isMounted = true;
     let intervalId: NodeJS.Timeout;
 
+    // Cache for balance values
+    const balanceCache = {
+      nocc: null as string | null,
+      stx: null as string | null,
+      lastUpdate: 0
+    };
+
+    // Minimum time between updates (30 seconds)
+    const UPDATE_INTERVAL = 30000;
+
     async function fetchBalances() {
-      if (userSession?.isUserSignedIn()) {
-        try {
-          const address = userSession.loadUserData().profile.stxAddress.mainnet;
-          if (!isMounted) return;
-          setWalletAddress(address);
-          
+      if (!userSession?.isUserSignedIn()) return;
+      
+      try {
+        const address = userSession.loadUserData().profile.stxAddress.mainnet;
+        if (!isMounted) return;
+        setWalletAddress(address);
+
+        const now = Date.now();
+        // Only fetch if cache is expired
+        if (now - balanceCache.lastUpdate >= UPDATE_INTERVAL) {
           const [noccBal, stxBal] = await Promise.all([
             getNOCCBalance(address),
             getSTXBalance(address)
           ]);
 
           if (!isMounted) return;
-          
+
           if (noccBal === 'OFFLINE' || stxBal === 'OFFLINE') {
             toast({
               title: 'Network Error',
@@ -43,21 +57,26 @@ const Header = () => {
             return;
           }
 
+          // Update cache
+          balanceCache.nocc = noccBal;
+          balanceCache.stx = stxBal;
+          balanceCache.lastUpdate = now;
+
           setNoccBalance(noccBal);
           setStxBalance(stxBal);
-        } catch (error) {
-          if (!window.navigator.onLine) {
-            toast({
-              title: 'Network Error',
-              description: 'Unable to fetch balances - Please check your internet connection',
-              status: 'error',
-              duration: null,
-              isClosable: true,
-              position: 'top-right'
-            });
-          } else {
-            console.warn('Error fetching balances:', error);
-          }
+        }
+      } catch (error) {
+        if (!window.navigator.onLine) {
+          toast({
+            title: 'Network Error',
+            description: 'Unable to fetch balances - Please check your internet connection',
+            status: 'error',
+            duration: null,
+            isClosable: true,
+            position: 'top-right'
+          });
+        } else {
+          console.warn('Error fetching balances:', error);
         }
       }
     }
@@ -65,8 +84,8 @@ const Header = () => {
     // Initial fetch
     fetchBalances();
     
-    // Set up polling interval for live updates - every 15 seconds
-    intervalId = setInterval(fetchBalances, 15000);
+    // Set up polling with longer interval
+    intervalId = setInterval(fetchBalances, UPDATE_INTERVAL);
     
     return () => {
       isMounted = false;
