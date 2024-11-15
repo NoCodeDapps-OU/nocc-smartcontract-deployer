@@ -450,56 +450,68 @@ export const DeploymentStatus: React.FC<DeploymentStatusProps> = ({
     const [swapState, deployState] = results;
 
     if (swapState) {
-      setSwapConfirmed(swapState.status === 'success');
+      const isSwapConfirmed = swapState.status === 'success';
+      setSwapConfirmed(isSwapConfirmed);
       setSwapFailed(swapState.status === 'failed');
       setSwapDropped(swapState.status === 'dropped');
+
+      // Update completion cache for swap
+      if (isSwapConfirmed) {
+        completedTransactions.set(swapTxId, {
+          status: 'success',
+          timestamp: Date.now(),
+          elapsedTime: Math.floor((Date.now() - timestamp) / 1000)
+        });
+      }
     }
 
     if (deployState) {
-      setDeployConfirmed(deployState.status === 'success');
+      const isDeployConfirmed = deployState.status === 'success';
+      setDeployConfirmed(isDeployConfirmed);
       setDeployFailed(deployState.status === 'failed');
       setDeployDropped(deployState.status === 'dropped');
+      
+      // Update completion cache for deploy
+      if (isDeployConfirmed) {
+        completedTransactions.set(deployTxId, {
+          status: 'success',
+          timestamp: Date.now(),
+          elapsedTime: Math.floor((Date.now() - timestamp) / 1000)
+        });
+      }
+
       if (deployState.burnBlockHeight) {
         setBurnBlockHeight(deployState.burnBlockHeight);
       }
     }
 
     setIsInitialized(true);
-  }, [swapTxId, deployTxId, checkTransaction]);
+  }, [swapTxId, deployTxId, checkTransaction, timestamp]);
 
   useEffect(() => {
     let isMounted = true;
     let timeoutId: NodeJS.Timeout;
 
-    // Check initial statuses first
-    checkInitialStatuses();
-
     const updateTransactionStates = async () => {
       if (!isMounted || !isInitialized) return;
 
-      // Don't check if both transactions are already completed
-      const swapCompleted = completedTransactions.has(swapTxId);
-      const deployCompleted = completedTransactions.has(deployTxId);
-      
-      if (swapCompleted && deployCompleted) {
-        return;
-      }
-
       // Check swap transaction if needed
-      if (swapTxId && !swapCompleted) {
+      if (swapTxId) {
         const swapState = await checkTransaction(swapTxId);
         if (swapState && isMounted) {
-          setSwapConfirmed(swapState.status === 'success');
+          const isSwapConfirmed = swapState.status === 'success';
+          setSwapConfirmed(isSwapConfirmed);
           setSwapFailed(swapState.status === 'failed');
           setSwapDropped(swapState.status === 'dropped');
         }
       }
 
-      // Only check deploy if swap is complete or no swap
-      if (deployTxId && !deployCompleted && (swapCompleted || !swapTxId)) {
+      // Check deploy transaction
+      if (deployTxId) {
         const deployState = await checkTransaction(deployTxId);
         if (deployState && isMounted) {
-          setDeployConfirmed(deployState.status === 'success');
+          const isDeployConfirmed = deployState.status === 'success';
+          setDeployConfirmed(isDeployConfirmed);
           setDeployFailed(deployState.status === 'failed');
           setDeployDropped(deployState.status === 'dropped');
           if (deployState.burnBlockHeight) {
@@ -508,14 +520,14 @@ export const DeploymentStatus: React.FC<DeploymentStatusProps> = ({
         }
       }
 
-      // Continue polling only if needed
-      const needsMoreChecks = (!swapCompleted && swapTxId) || 
-                            (!deployCompleted && deployTxId && (swapCompleted || !swapTxId));
-
-      if (needsMoreChecks && isMounted) {
+      // Continue polling if either transaction is not completed
+      if ((!swapConfirmed && swapTxId) || (!deployConfirmed && deployTxId)) {
         timeoutId = setTimeout(updateTransactionStates, 15000);
       }
     };
+
+    // Check initial statuses first
+    checkInitialStatuses();
 
     if (isInitialized) {
       updateTransactionStates();
@@ -527,7 +539,7 @@ export const DeploymentStatus: React.FC<DeploymentStatusProps> = ({
         clearTimeout(timeoutId);
       }
     };
-  }, [isInitialized, swapTxId, deployTxId, timestamp, checkTransaction]);
+  }, [isInitialized, swapTxId, deployTxId, timestamp, checkTransaction, swapConfirmed, deployConfirmed]);
 
   // If both transactions are dropped, don't render anything
   if (swapDropped && deployDropped) {
