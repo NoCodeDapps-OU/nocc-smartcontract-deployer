@@ -1,8 +1,38 @@
 import { Box, Text, Input, VStack } from '@chakra-ui/react';
-import { useCallback } from 'react';
+import { useCallback, useEffect } from 'react';
 import CodeMirror from '@uiw/react-codemirror';
 import { vscodeDark } from '@uiw/codemirror-theme-vscode';
 import { clarityLanguage } from '../utils/clarity-language';
+
+const DEFAULT_CONTRACT_TEMPLATE = `;; title: 
+;; version: 
+;; summary: 
+;; description:
+
+;; traits
+;;
+
+;; token definitions
+;; 
+
+;; constants
+;;
+
+;; data vars
+;;
+
+;; data maps
+;;
+
+;; public functions
+;;
+
+;; read only functions
+;;
+
+;; private functions
+;;
+`;
 
 interface ContractInputProps {
   onChange: (values: { name: string; code: string }) => void;
@@ -20,6 +50,13 @@ export default function ContractInput({ onChange, values }: ContractInputProps) 
   const handleCodeChange = useCallback((code: string) => {
     onChange({ ...values, code });
   }, [onChange, values]);
+
+  // Set default template when component mounts
+  useEffect(() => {
+    if (!values.code) {
+      onChange({ ...values, code: DEFAULT_CONTRACT_TEMPLATE });
+    }
+  }, []);
 
   return (
     <VStack spacing={6} align="stretch">
