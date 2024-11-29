@@ -24,13 +24,13 @@ const DEFAULT_CONTRACT_TEMPLATE = `;; title:
 ;; data maps
 ;;
 
+;; private functions
+;;
+
 ;; public functions
 ;;
 
 ;; read only functions
-;;
-
-;; private functions
 ;;
 `;
 
